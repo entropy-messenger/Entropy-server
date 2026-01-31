@@ -432,7 +432,7 @@ http::response<http::string_body> HttpSession::handle_keys_upload() {
                                       remote_addr_, "Keys upload: identity_hash mismatch with identityKey");
                     json::object error;
                     error["error"] = "Cryptographic identity mismatch";
-                    http::response<http::status::forbidden, req_.version()};
+                    http::response<http::string_body> res{http::status::forbidden, req_.version()};
                     res.set(http::field::content_type, "application/json");
                     res.body() = json::serialize(error);
                     res.prepare_payload();

@@ -12,6 +12,8 @@
 #include <cstring>
 
 
+namespace entropy {
+
 // Anti-Spam Proof-of-Work (PoW) verification system.
 // Implements a dynamic-difficulty SHA256 challenge-response mechanism.
 class PoWVerifier {

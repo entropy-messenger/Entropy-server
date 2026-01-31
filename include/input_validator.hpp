@@ -9,8 +9,6 @@
 
 namespace entropy {
 
-class InputValidator {
-public:
 // Comprehensive Input Validation and Cryptographic Verification.
 class InputValidator {
 public:

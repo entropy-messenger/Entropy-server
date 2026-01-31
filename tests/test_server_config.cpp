@@ -9,5 +9,5 @@ TEST(ServerConfigTest, DefaultValues) {
     EXPECT_EQ(config.port, 8080);
     EXPECT_FALSE(config.enable_tls);
     EXPECT_EQ(config.max_message_size, 1024 * 1024);
-    EXPECT_EQ(config.secret_salt, "aura salt");
+    EXPECT_EQ(config.secret_salt, "entropy_default_deployment_salt");
 }
