@@ -5,7 +5,7 @@
 
 Entropy is a high-performance, privacy-first messaging server designed for environments where metadata protection and anonymity are paramount. It uses a blinded-ID routing system to ensure the server never knows who is talking to whom.
 
-![License](https://img.shields.io/badge/license-MIT-blue.svg)
+![Status](https://img.shields.io/badge/status-proprietary-red)
 ![C++](https://img.shields.io/badge/std-c%2B%2B17-blue)
 ![Security](https://img.shields.io/badge/security-audited-green)
 
@@ -93,15 +93,9 @@ cd build && ctest
 python3 tests/full_audit.py
 ```
 
----
+## 🏢 Internal Development
 
-## 🤝 Contributing
-
-1.  Fork it
-2.  Create your feature branch (`git checkout -b feature/amazing-feature`)
-3.  Commit your changes (`git commit -m 'Add some amazing feature'`)
-4.  Push to the branch (`git push origin feature/amazing-feature`)
-5.  Open a Pull Request
+This repository contains proprietary code. Access and use are currently restricted to authorized personnel only. 
 
 ---
 
