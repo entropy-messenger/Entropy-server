@@ -32,7 +32,7 @@ jobs:
         export CXX=g++-13
         mkdir build
         cd build
-        cmake -DCMAKE_BUILD_TYPE=Release ../server
+        cmake -DCMAKE_BUILD_TYPE=Release ..
 
     - name: Build
       run: |
