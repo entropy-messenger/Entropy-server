@@ -15,7 +15,6 @@ namespace http = boost::beast::http;
 namespace entropy {
 
 
-// TLS WebSocket Constructor
 WebSocketSession::WebSocketSession(
     beast::ssl_stream<beast::tcp_stream>&& stream,
     ConnectionManager& conn_manager,
@@ -49,8 +48,6 @@ WebSocketSession::WebSocketSession(
     pmd.server_enable = true;
     pmd.client_enable = true;
     tls_ws.set_option(pmd);
-    
-    // Set global message size limit to prevent OOM attacks
     tls_ws.read_message_max(config_.max_message_size); 
     last_activity_time_ = std::chrono::steady_clock::now();
 }
@@ -137,7 +134,6 @@ template void WebSocketSession::accept<http::string_body, std::allocator<char>>(
 );
 
 void WebSocketSession::run() {
-    // Enable traffic shaping and noise generation
     start_pacing();
     do_read();
 }
@@ -319,9 +315,7 @@ void WebSocketSession::start_pacing() {
     tick_pacing();
 }
 
-// Traffic Normalization Logic (Pacing):
 // Sends dummy packets at regular intervals if no real activity is detected.
-// This masks the true communication volume and frequency from observers.
 void WebSocketSession::tick_pacing() {
     auto self = shared_from_this();
     pacing_timer_->expires_after(std::chrono::milliseconds(ServerConfig::Pacing::tick_interval_ms));

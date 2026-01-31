@@ -18,7 +18,6 @@ ConnectionManager::ConnectionManager(const std::string& salt) : salt_(salt) {
 }
 
 // Delivers a message received from Redis pub/sub to a local session if it exists.
-// Used for scaling across multiple server instances.
 void ConnectionManager::process_distributed_message_for_blinded_id(const std::string& blinded_id, const std::string& message_json) {
     std::shared_lock lock(connections_mutex_);
     auto it = connections_.find(blinded_id);
@@ -238,7 +237,6 @@ void ConnectionManager::close_all_connections() {
 }
 
 // Generates a salted SHA256 hash of an identifier (Blinded ID).
-// This prevents the server and database from knowing real user IDs.
 std::string ConnectionManager::blind_id(const std::string& id) const {
     std::string data = id + salt_;
     unsigned char hash[SHA256_DIGEST_LENGTH];

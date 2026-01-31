@@ -1,0 +1,45 @@
+name: Entropy Server CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          cmake \
+          libssl-dev \
+          libboost-system-dev \
+          libboost-thread-dev \
+          libboost-json-dev \
+          gcc-13 \
+          g++-13
+
+    - name: Configure CMake
+      run: |
+        export CC=gcc-13
+        export CXX=g++-13
+        mkdir build
+        cd build
+        cmake -DCMAKE_BUILD_TYPE=Release ../server
+
+    - name: Build
+      run: |
+        cd build
+        make -j$(nproc)
+
+    - name: Run Tests
+      run: |
+        cd build
+        ctest --output-on-failure

@@ -18,8 +18,6 @@ RedisManager::RedisManager(const ServerConfig& config, ConnectionManager& conn_m
         connected_ = true;
         
         // Enforce volatile-only and ephemeral data policies.
-        // This ensures that even in case of a physical seizure, no messages or keys
-        // remain on disk after a restart or memory purge.
         try {
             redis_->command("CONFIG", "SET", "save", "");
             redis_->command("CONFIG", "SET", "appendonly", "no");
@@ -464,7 +462,6 @@ bool RedisManager::verify_session_token(const std::string& user_hash, const std:
 }
 
 // Irreversibly purges all data associated with a public key hash from Redis.
-// This is the "Isotope-Burn" forensic data destruction feature.
 bool RedisManager::burn_account(const std::string& user_hash) {
     if (!connected_) return false;
     try {
@@ -487,15 +484,14 @@ bool RedisManager::burn_account(const std::string& user_hash) {
         // Remove from discovery set
         redis_->srem("active_users", user_hash);
         
-        std::cout << "[!] Forensic Burn completed for blinded ID: " << blinded << "\n";
+        std::cout << "[!] Burn completed for blinded ID: " << blinded << "\n";
         return true;
     } catch (...) {
         return false;
     }
 }
 
-// Blind an identifier using the server's secret salt. 
-// This prevents the Redis database from knowing actual public keys.
+// Blind an identifier using the server's secret salt.
 std::string RedisManager::blind(const std::string& input) {
     std::string data = input + server_salt_;
     unsigned char hash[SHA256_DIGEST_LENGTH];

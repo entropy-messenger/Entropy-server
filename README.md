@@ -5,9 +5,9 @@
 
 Entropy is a high-performance, privacy-first messaging server designed for environments where metadata protection and anonymity are paramount. It uses a blinded-ID routing system to ensure the server never knows who is talking to whom.
 
-![Status](https://img.shields.io/badge/status-proprietary-red)
+![Status](https://img.shields.io/badge/status-active-green)
 ![C++](https://img.shields.io/badge/std-c%2B%2B17-blue)
-![Security](https://img.shields.io/badge/security-audited-green)
+![License](https://img.shields.io/badge/license-AGPLv3-blue)
 
 ---
 
@@ -30,11 +30,13 @@ Entropy is a high-performance, privacy-first messaging server designed for envir
 ## 🛠️ Quick Start
 
 ### Prerequisites
-*   Linux / macOS
-*   C++17 Compiler (GCC/Clang)
-*   CMake 3.12+
-*   Redis 6+
-*   OpenSSL 1.1+
+*   **Operating System**: Linux / macOS
+*   **Compiler**: C++23 compliant (GCC 13+ or Clang 16+ highly recommended)
+*   **Build System**: CMake 3.14+
+*   **Libraries**:
+    *   **Boost 1.75+**: Required components: `system`, `thread`, `json`
+    *   **OpenSSL 1.1.1+ / 3.0+**: For TLS 1.3 and cryptographic primitives
+*   **Database**: Redis 6+ (optimized for volatile storage)
 
 ### Build
 ```bash
@@ -66,18 +68,60 @@ set -a; source .env; set +a
 
 ---
 
+## ⚙️ Configuration
+
+Entropy is configured primarily via environment variables.
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `ENTROPY_PORT` | Port to listen on | `8080` |
+| `ENTROPY_ADDR` | Address to bind to | `0.0.0.0` |
+| `ENTROPY_SECRET_SALT` | **CRITICAL**: Salt for blinded routing. | (Must be set) |
+| `ENTROPY_REDIS_URL` | Redis connection URL | `tcp://127.0.0.1:6379` |
+| `ENTROPY_ALLOWED_ORIGINS`| Comma-separated CORS origins | (Empty) |
+| `ENTROPY_RATE_LIMIT` | Global requests per second | `100.0` |
+| `ENTROPY_MAX_CONNS_PER_IP`| Connection cap per IP | `10` |
+| `ENTROPY_ADMIN_TOKEN` | Optional token for admin metrics | (Empty) |
+
+---
+
 ## 🛡️ Security Architecture
 
-### 1. Blinded Routing
-When Alice sends to Bob, she sends to `Hash(BobID + ServerSalt)`. The server only sees the blinded hash. It cannot reverse this to find "Bob" without the salt, and external observers cannot correlate it to Bob's public ID.
+### 1. Blinded Routing (Zero-Metadata)
+Entropy prevents the server from correlating participants. 
+*   **The Problem**: In standard E2EE, the server knows Alice is talking to Bob.
+*   **The Solution**: Alice sends messages to `SHA256(BobID + ServerSalt)`. Without the `ServerSalt`, an attacker cannot determine Bob's identity even with access to the database or traffic logs.
 
-### 2. Rate Limiting
-*   **Connection**: Max connections per IP (Configurable).
-*   **PoW**: Expensive operations (Registration, Key Upload) require solving a SHA-256 puzzle.
-*   **Traffic**: Granular token buckets for different message types.
+### 2. Proof-of-Work (PoW) Defense
+Expensive operations (Registration, Key Uploads) require a SHA-256 challenge solution. Difficulty scales dynamically based on:
+*   **Server Load**: Higher active connections increase difficulty globally.
+*   **Resource Scarcity**: Shorter, desirable nicknames (e.g., "alice") require exponentially more work.
+*   **Account Maturity**: Older, verified identities are rewarded with lower difficulty.
 
-### 3. Forensic Burn
-Sending a signed `Isotope-Burn` request to `/account/burn` forces the server to `DEL` all keys associated with that blinded ID in Redis immediately.
+### 3. K-Anonymity Discovery
+To hide interest in a peer, clients can fetch keys in batches. The server supports a sampler that returns random "decoy" keys, allowing clients to hide their target ID among $K$ others.
+
+### 4. Forensic Burn
+A signed `BURN` request triggers an atomic purge of all identity-associated data in Redis. This ensures that even if the server is seized, no metadata traces remain for that identifier.
+
+---
+
+## 🛠️ Operations
+
+### 🐳 Docker Deployment
+Use our production-ready `docker-compose.yml`:
+```bash
+# Set your salt first!
+export ENTROPY_SECRET_SALT=$(openssl rand -hex 32)
+docker-compose up -d
+```
+
+### 🛑 Graceful Shutdown
+The server handles `SIGINT` and `SIGTERM`. Upon receiving a signal, it:
+1. Stops accepting new connections.
+2. Flushes pending write queues for active sessions.
+3. Closes all WebSockets cleanly.
+4. Shuts down the Boost.Asio I/O context.
 
 ---
 
@@ -90,12 +134,12 @@ We include a comprehensive suite of Python-based attack vectors and C++ unit tes
 cd build && ctest
 
 # Run full security audit (requires server running)
-python3 tests/full_audit.py
+python3 tests/security_audit.py
 ```
 
-## 🏢 Internal Development
+## 📄 License
 
-This repository contains proprietary code. Access and use are currently restricted to authorized personnel only. 
+This project is licensed under the GNU Affero General Public License v3.0 (AGPLv3) - see the LICENSE file for details.
 
 ---
 

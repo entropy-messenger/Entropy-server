@@ -32,7 +32,6 @@ using tcp = boost::asio::ip::tcp;
 
 namespace entropy {
 
-// Listens for incoming TCP connections and launches HttpSession instances.
 class Listener : public std::enable_shared_from_this<Listener> {
 public:
     Listener(
@@ -59,37 +58,31 @@ public:
     {
         beast::error_code ec;
         
-        // Open the acceptor
         acceptor_.open(endpoint.protocol(), ec);
         if (ec) {
             throw std::runtime_error("Failed to open acceptor: " + ec.message());
         }
         
-        // Allow immediate binding to the same address/port after a crash or restart
         acceptor_.set_option(net::socket_base::reuse_address(true), ec);
         if (ec) {
             throw std::runtime_error("Failed to set SO_REUSEADDR: " + ec.message());
         }
         
-        // Bind to the configured endpoint (address and port)
         acceptor_.bind(endpoint, ec);
         if (ec) {
             throw std::runtime_error("Failed to bind: " + ec.message());
         }
         
-        // Start listening for incoming connections
         acceptor_.listen(net::socket_base::max_listen_connections, ec);
         if (ec) {
             throw std::runtime_error("Failed to listen: " + ec.message());
         }
     }
     
-    // Begin the asynchronous accept loop
     void run() {
         do_accept();
     }
 
-    // Gracefully stop the listener
     void stop() {
         beast::error_code ec;
         acceptor_.close(ec);
@@ -108,7 +101,6 @@ private:
     KeyStorage& key_storage_;
     RedisManager& redis_;
     
-    // Start the asynchronous accept loop
     void do_accept() {
         acceptor_.async_accept(
             net::make_strand(ioc_),
@@ -117,14 +109,12 @@ private:
             });
     }
     
-    // Handle new incoming connection
     void on_accept(beast::error_code ec, tcp::socket socket) {
         if (ec) {
             std::cerr << "[!] Accept error: " << ec.message() << "\n";
         } else {
             std::cout << "[*] New connection from " << socket.remote_endpoint() << "\n";
             
-            // Enforce global connection limit
             if (conn_manager_.connection_count() >= config_.max_global_connections) {
                 SecurityLogger::log(SecurityLogger::Level::WARNING, SecurityLogger::EventType::CONNECTION_REJECTED,
                                   socket.remote_endpoint().address().to_string(), "Global connection limit reached");
@@ -132,7 +122,6 @@ private:
                 return; 
             }
 
-            // Launch HTTP session (with or without TLS)
             if (config_.enable_tls) {
                 auto stream = beast::ssl_stream<beast::tcp_stream>(
                     beast::tcp_stream(std::move(socket)),
@@ -168,8 +157,7 @@ private:
 
 } 
 
-// Configures the SSL context with hardened production defaults.
-// Enforces TLS 1.2+ and a restricted list of high-strength cipher suites.
+// Configures the SSL context (TLS 1.2+).
 void load_server_certificate(ssl::context& ctx, const std::string& cert_path, const std::string& key_path) {
     ctx.set_options(
         ssl::context::default_workarounds |
@@ -180,11 +168,9 @@ void load_server_certificate(ssl::context& ctx, const std::string& cert_path, co
         ssl::context::single_dh_use
     );
     
-    // Prefer server cipher suites to mitigate potential client weakness
     SSL_CTX_set_options(ctx.native_handle(), SSL_OP_CIPHER_SERVER_PREFERENCE);
     SSL_CTX_set_min_proto_version(ctx.native_handle(), TLS1_2_VERSION);
     
-    // Restricted Modern Cipher Suites (AEAD only)
     SSL_CTX_set_cipher_list(ctx.native_handle(),
         "ECDHE-ECDSA-AES256-GCM-SHA384:"
         "ECDHE-RSA-AES256-GCM-SHA384:"
@@ -224,8 +210,6 @@ int main(int argc, char* argv[]) {
         }
         
         // --- Environment Variable Overrides ---
-        // Environment variables take precedence over compiled defaults or CLI arguments
-        // to facilitate containerized deployments (Docker/K8s).
         
         if (const char* env_port = std::getenv("ENTROPY_PORT")) {
             config.port = static_cast<uint16_t>(std::stoi(env_port));
@@ -301,13 +285,6 @@ int main(int argc, char* argv[]) {
         
         std::filesystem::path exe_path = std::filesystem::canonical("/proc/self/exe").parent_path();
         
-
-
-
-
-
-
-
         if (config.enable_tls) {
             if (config.cert_path.rfind("certs/", 0) == 0) {
                 config.cert_path = (exe_path / config.cert_path).string();
@@ -332,14 +309,9 @@ int main(int argc, char* argv[]) {
 ║              ENTROPY SECURE MESSAGING SERVER v2.0            ║
 ║                                                              ║
 ║                                                              ║
-║  ~ Zero server-side storage                                  ║
-║  ✓ No user registration                                      ║
-║  ✓ End-to-end encryption                                     ║
 )" << (config.enable_tls ? "║  ✓ TLS 1.2+/1.3 encrypted transport                          ║\n" 
                          : "║  ⚠ TLS DISABLED (development mode)                           ║\n")
-   << R"(║  ✓ Rate limiting & DoS protection                            ║
-╚══════════════════════════════════════════════════════════════╝
-)" << "\n";
+   << "╚══════════════════════════════════════════════════════════════╝\n";
         
         
         net::io_context ioc{config.thread_count};
@@ -414,12 +386,9 @@ int main(int argc, char* argv[]) {
                 conn_manager.close_all_connections();
                 
                 std::cout << "[*] Draining I/O context...\n";
-                
-                // Stop the I/O context. This causes run() to return.
                 ioc.stop(); 
             });
         
-        // Run the I/O service on the requested number of threads
         std::vector<std::thread> threads;
         threads.reserve(config.thread_count - 1);
         
@@ -429,15 +398,12 @@ int main(int argc, char* argv[]) {
             });
         }
         
-        // (Block until I/O context is stopped)
         ioc.run();
         
-        // Wait for all threads to exit
         for (auto& t : threads) {
             t.join();
         }
         
-        // Signal loop termination
         running = false;
         
         std::cout << "[*] Server stopped\n";

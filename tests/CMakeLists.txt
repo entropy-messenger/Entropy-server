@@ -68,6 +68,9 @@ set(SERVER_LIB_SOURCES
     ${SERVER_SRC_DIR}/message_relay.cpp
     ${SERVER_SRC_DIR}/redis_manager.cpp
     ${SERVER_SRC_DIR}/rate_limiter.cpp
+    ${SERVER_SRC_DIR}/handlers/identity_handler.cpp
+    ${SERVER_SRC_DIR}/handlers/health_handler.cpp
+    ${SERVER_SRC_DIR}/traffic_normalizer.cpp
 )
 
 add_library(server_logic STATIC ${SERVER_LIB_SOURCES})

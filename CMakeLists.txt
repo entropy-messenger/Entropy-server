@@ -83,6 +83,9 @@ set(SOURCES
     src/message_relay.cpp
     src/redis_manager.cpp
     src/rate_limiter.cpp
+    src/handlers/identity_handler.cpp
+    src/handlers/health_handler.cpp
+    src/traffic_normalizer.cpp
 )
 
 set(HEADERS
@@ -107,6 +110,7 @@ add_executable(server ${SOURCES} ${HEADERS})
 
 target_include_directories(server PRIVATE 
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/handlers
 )
 
 

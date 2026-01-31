@@ -7,6 +7,7 @@
 #include "metrics.hpp"
 #include "security_logger.hpp"
 #include "input_validator.hpp"
+#include "traffic_normalizer.hpp"
 #include <boost/json.hpp>
 #include <boost/beast/core/detail/base64.hpp>
 #include <openssl/sha.h>
@@ -79,6 +80,8 @@ HttpSession::HttpSession(
     , rate_limiter_(rate_limiter)
     , key_storage_(key_storage)
     , redis_(redis)
+    , health_handler_(config, conn_manager)
+    , identity_handler_(config, key_storage, redis, rate_limiter)
 {
     try {
         auto& s = std::get<beast::ssl_stream<beast::tcp_stream>>(stream_);
@@ -107,6 +110,8 @@ HttpSession::HttpSession(
     , rate_limiter_(rate_limiter)
     , key_storage_(key_storage)
     , redis_(redis)
+    , health_handler_(config, conn_manager)
+    , identity_handler_(config, key_storage, redis, rate_limiter)
 {
     try {
         auto& s = std::get<beast::tcp_stream>(stream_);
@@ -216,16 +221,18 @@ void HttpSession::handle_request() {
 
     // Health Checks & Metrics
     if (target == "/health" && method == http::verb::get) {
-        send_response(handle_health());
+        send_response(health_handler_.handle_health(req_.version()));
     } else if (target == "/stats" && method == http::verb::get) {
-        if (verify_admin_request()) {
-            send_response(handle_stats());
+        bool is_local = (remote_addr_ == "127.0.0.1" || remote_addr_ == "::1");
+        if (is_local || health_handler_.verify_admin_request(req_)) {
+            send_response(health_handler_.handle_stats(req_));
         } else {
             send_response(handle_not_found());
         }
     } else if (target == "/metrics" && method == http::verb::get) {
-        if (verify_admin_request()) {
-            send_response(handle_metrics());
+         bool is_local = (remote_addr_ == "127.0.0.1" || remote_addr_ == "::1");
+         if (is_local || health_handler_.verify_admin_request(req_)) {
+            send_response(health_handler_.handle_metrics(req_.version()));
         } else {
             send_response(handle_not_found());
         }
@@ -234,15 +241,15 @@ void HttpSession::handle_request() {
     } else if (target.find("/keys/upload") == 0 && method == http::verb::post) {
         auto res = rate_limiter_.check("up:" + blind_ip(remote_addr_), config_.keys_upload_limit, 60);
         if (!res.allowed) send_response(handle_rate_limited(res));
-        else send_response(handle_keys_upload());
+        else send_response(identity_handler_.handle_keys_upload(req_, remote_addr_));
     } else if (target.find("/keys/fetch") == 0 && method == http::verb::get) {
         auto res = rate_limiter_.check("fetch:" + blind_ip(remote_addr_), config_.keys_fetch_limit, 60);
         if (!res.allowed) send_response(handle_rate_limited(res));
-        else send_response(handle_keys_fetch());
+        else send_response(identity_handler_.handle_keys_fetch(req_, remote_addr_));
     } else if (target.find("/keys/random") == 0 && method == http::verb::get) {
         auto res = rate_limiter_.check("keys_rand:" + blind_ip(remote_addr_), config_.keys_random_limit, 60);
         if (!res.allowed) send_response(handle_rate_limited(res));
-        else send_response(handle_keys_random());
+        else send_response(identity_handler_.handle_keys_random(req_, remote_addr_));
 
     // Message Relay APIs (HTTP fallback)
     } else if (target.find("/relay") == 0 && target.find("/relay/multicast") == std::string::npos && method == http::verb::post) {
@@ -256,19 +263,19 @@ void HttpSession::handle_request() {
     } else if (target.find("/pow/challenge") == 0 && method == http::verb::get) {
         auto res = rate_limiter_.check("pow_limit:" + blind_ip(remote_addr_), config_.pow_rate_limit, 60);
         if (!res.allowed) send_response(handle_rate_limited(res));
-        else send_response(handle_pow_challenge());
+        else send_response(identity_handler_.handle_pow_challenge(req_, remote_addr_));
     } else if (target.find("/nickname/register") == 0 && method == http::verb::post) {
         auto res = rate_limiter_.check("nick_reg:" + blind_ip(remote_addr_), config_.nick_register_limit, 60);
         if (!res.allowed) send_response(handle_rate_limited(res));
-        else send_response(handle_nickname_register());
+        else send_response(identity_handler_.handle_nickname_register(req_, remote_addr_));
     } else if (target.find("/nickname/lookup") == 0 && method == http::verb::get) {
         auto res = rate_limiter_.check("nick_look:" + blind_ip(remote_addr_), config_.nick_lookup_limit, 60);
         if (!res.allowed) send_response(handle_rate_limited(res));
-        else send_response(handle_nickname_lookup());
+        else send_response(identity_handler_.handle_nickname_lookup(req_, remote_addr_));
     } else if (target.find("/account/burn") == 0 && method == http::verb::post) {
         auto res = rate_limiter_.check("burn:" + blind_ip(remote_addr_), config_.account_burn_limit, 300); 
         if (!res.allowed) send_response(handle_rate_limited(res));
-        else send_response(handle_account_burn());
+        else send_response(identity_handler_.handle_account_burn(req_, remote_addr_));
 
     } else {
         send_response(handle_not_found());
@@ -276,610 +283,9 @@ void HttpSession::handle_request() {
 }
 
 
-
-// Basic health check to verify server availability and transport security status.
-http::response<http::string_body> HttpSession::handle_health() {
-    json::object response;
-    response["status"] = "healthy";
-    response["storage"] = "none";
-    response["message"] = "Ephemeral relay only - no data stored";
-    response["tls"] = config_.enable_tls;
-    
-    http::response<http::string_body> res{http::status::ok, req_.version()};
-    res.set(http::field::content_type, "application/json");
-    res.body() = json::serialize(response);
-    res.prepare_payload();
-    
-    add_security_headers(res);
-    add_cors_headers(res);
-    
-    return res;
-}
-
-// Returns high-level server statistics.
-// Requires valid admin credentials/token as verified by verify_admin_request().
-http::response<http::string_body> HttpSession::handle_stats() {
-    json::object response;
-    response["active_connections"] = static_cast<int64_t>(conn_manager_.connection_count());
-    response["uptime_info"] = "Server stores ZERO messages";
-    
-    http::response<http::string_body> res{http::status::ok, req_.version()};
-    res.set(http::field::content_type, "application/json");
-    res.body() = json::serialize(response);
-    res.prepare_payload();
-    
-    add_security_headers(res);
-    add_cors_headers(res);
-    
-    return res;
-}
-
-// Exports Prometheus-formatted metrics for operational scrapers.
-http::response<http::string_body> HttpSession::handle_metrics() {
-    std::string body = MetricsRegistry::instance().collect_prometheus();
-    
-    http::response<http::string_body> res{http::status::ok, req_.version()};
-    res.set(http::field::content_type, "text/plain; version=0.0.4");
-    res.body() = body;
-    res.prepare_payload();
-    
-    add_security_headers(res);
-    
-    return res;
-}
-
-// Processes identity bundle uploads (Public Keys).
-// This requires a valid high-difficulty Proof-of-Work bound to the identity_hash
-// to prevent identity-squatting and database exhaustion.
-http::response<http::string_body> HttpSession::handle_keys_upload() {
-    if (req_.body().size() > 64 * 1024) { 
-        json::object error;
-        error["error"] = "Payload too large";
-        http::response<http::string_body> res{http::status::payload_too_large, req_.version()};
-        res.set(http::field::content_type, "application/json");
-        res.body() = json::serialize(error);
-        res.prepare_payload();
-        add_security_headers(res);
-        add_cors_headers(res);
-        return res;
-    }
-
-    try {
-        auto json_val = InputValidator::safe_parse_json(req_.body());
-        if (!json_val.is_object()) throw std::runtime_error("Not an object");
-        
-        auto& obj = json_val.as_object();
-        
-        // Enforce maximum number of pre-keys per identity to limit Redis memory footprint.
-        if (obj.contains("preKeys") && obj["preKeys"].is_array()) {
-            if (obj["preKeys"].as_array().size() > config_.max_prekeys_per_upload) {
-                json::object error;
-                error["error"] = "Too many pre-keys per upload (Max: " + std::to_string(config_.max_prekeys_per_upload) + ")";
-                http::response<http::string_body> res{http::status::bad_request, req_.version()};
-                res.set(http::field::content_type, "application/json");
-                res.body() = json::serialize(error);
-                res.prepare_payload();
-                add_security_headers(res);
-                add_cors_headers(res);
-                return res;
-            }
-        }
-
-        std::string user_hash;
-        if (obj.contains("identity_hash") && obj["identity_hash"].is_string()) {
-             user_hash = std::string(obj["identity_hash"].as_string());
-        }
-
-        // Validate presence of required Post-Quantum cryptographic primitives.
-        if (!obj.contains("pq_identityKey") || !obj.contains("signedPreKey") || !obj.at("signedPreKey").as_object().contains("pq_publicKey")) {
-             json::object error;
-             error["error"] = "Post-Quantum Handshake Keys Required";
-             http::response<http::string_body> res{http::status::bad_request, req_.version()};
-             res.set(http::field::content_type, "application/json");
-             res.body() = json::serialize(error);
-             res.prepare_payload();
-             add_security_headers(res);
-             add_cors_headers(res);
-             return res;
-        }
-        
-        if (!InputValidator::is_valid_hash(user_hash)) {
-             json::object error;
-             error["error"] = "Invalid identity_hash format";
-             http::response<http::string_body> res{http::status::bad_request, req_.version()};
-             res.set(http::field::content_type, "application/json");
-             res.body() = json::serialize(error);
-             res.prepare_payload();
-             add_security_headers(res);
-             add_cors_headers(res);
-             return res;
-        }
-
-        // Verify Anti-Spam: Proof-of-Work MUST be cryptographically bound to the identity_hash.
-        if (!validate_pow(req_, rate_limiter_, remote_addr_, -1, user_hash)) {
-             SecurityLogger::log(SecurityLogger::Level::ERROR, SecurityLogger::EventType::AUTH_FAILURE,
-                                remote_addr_, "Keys upload rejected: invalid PoW or context binding");
-             json::object error;
-             error["error"] = "Invalid or Missing Proof-of-Work (Unbound)";
-             http::response<http::string_body> res{http::status::unauthorized, req_.version()};
-             res.set(http::field::content_type, "application/json");
-             res.body() = json::serialize(error);
-             res.prepare_payload();
-             add_security_headers(res);
-             add_cors_headers(res);
-             return res;
-        }
-
-        // Cryptographic integrity check: Identity Hash MUST match the actual derived SHA256 of the identityKey.
-        if (obj.contains("identityKey") && obj["identityKey"].is_string()) {
-            std::string ik_b64 = std::string(obj["identityKey"].as_string());
-            
-            std::vector<unsigned char> decoded_key;
-            decoded_key.resize(boost::beast::detail::base64::decoded_size(ik_b64.size()));
-            auto result = boost::beast::detail::base64::decode(decoded_key.data(), ik_b64.c_str(), ik_b64.size());
-            decoded_key.resize(result.first);
-            
-            if (result.first > 0) {
-                unsigned char hash[SHA256_DIGEST_LENGTH];
-                SHA256(decoded_key.data(), decoded_key.size(), hash);
-                std::stringstream ss;
-                for(int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
-                    ss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
-                }
-                
-                if (ss.str() != user_hash) {
-                    SecurityLogger::log(SecurityLogger::Level::ERROR, SecurityLogger::EventType::AUTH_FAILURE,
-                                      remote_addr_, "Keys upload: identity_hash mismatch with identityKey");
-                    json::object error;
-                    error["error"] = "Cryptographic identity mismatch";
-                    http::response<http::string_body> res{http::status::forbidden, req_.version()};
-                    res.set(http::field::content_type, "application/json");
-                    res.body() = json::serialize(error);
-                    res.prepare_payload();
-                    add_security_headers(res);
-                    add_cors_headers(res);
-                    return res;
-                }
-
-                // Verify self-signed bundle signature if provided
-                if (!obj.contains("bundle_signature") || !obj["bundle_signature"].is_string()) {
-                    json::object error;
-                    error["error"] = "Bundle signature required for cryptographic ownership";
-                    http::response<http::string_body> res{http::status::unauthorized, req_.version()};
-                    res.set(http::field::content_type, "application/json");
-                    res.body() = json::serialize(error);
-                    res.prepare_payload();
-                    add_security_headers(res);
-                    add_cors_headers(res);
-                    return res;
-                }
-
-                std::string sig_b64 = std::string(obj["bundle_signature"].as_string());
-                std::vector<unsigned char> decoded_sig;
-                decoded_sig.resize(boost::beast::detail::base64::decoded_size(sig_b64.size()));
-                auto sig_res = boost::beast::detail::base64::decode(decoded_sig.data(), sig_b64.c_str(), sig_b64.size());
-                decoded_sig.resize(sig_res.first);
-
-                
-                json::object sign_obj;
-                sign_obj["identityKey"] = obj["identityKey"];
-                sign_obj["pq_identityKey"] = obj["pq_identityKey"];
-                sign_obj["signedPreKey"] = obj["signedPreKey"];
-                sign_obj["preKeys"] = obj["preKeys"];
-                
-                std::string sign_data = json::serialize(sign_obj);
-                std::vector<unsigned char> msg_vec(sign_data.begin(), sign_data.end());
-
-                if (!InputValidator::verify_ed25519(decoded_key, msg_vec, decoded_sig)) {
-                    SecurityLogger::log(SecurityLogger::Level::ERROR, SecurityLogger::EventType::AUTH_FAILURE,
-                                      remote_addr_, "Keys upload: Invalid bundle signature");
-                    json::object error;
-                    error["error"] = "Invalid bundle signature";
-                    http::response<http::string_body> res{http::status::forbidden, req_.version()};
-                    res.set(http::field::content_type, "application/json");
-                    res.body() = json::serialize(error);
-                    res.prepare_payload();
-                    add_security_headers(res);
-                    add_cors_headers(res);
-                    return res;
-                }
-            }
-        }
-        
-        
-        
-        if (!key_storage_.store_bundle(user_hash, req_.body())) {
-             json::object error;
-             error["error"] = "Storage Unavailable";
-             http::response<http::string_body> res{http::status::service_unavailable, req_.version()};
-             res.set(http::field::content_type, "application/json");
-             res.body() = json::serialize(error);
-             res.prepare_payload();
-             add_security_headers(res);
-             add_cors_headers(res);
-             return res;
-        }
-        
-        json::object response;
-        response["status"] = "success";
-        
-        http::response<http::string_body> res{http::status::ok, req_.version()};
-        res.set(http::field::content_type, "application/json");
-        res.body() = json::serialize(response);
-        res.prepare_payload();
-        
-        add_security_headers(res);
-        add_cors_headers(res);
-        return res;
-        
-    } catch (...) {
-        json::object error;
-        error["error"] = "Invalid JSON";
-        
-        http::response<http::string_body> res{http::status::bad_request, req_.version()};
-        res.set(http::field::content_type, "application/json");
-        res.body() = json::serialize(error);
-        res.prepare_payload();
-        add_security_headers(res);
-        add_cors_headers(res);
-        return res;
-    }
-}
-
-// Retrieves identity bundles for one or more target users.
-http::response<http::string_body> HttpSession::handle_keys_fetch() {
-    std::string target = std::string(req_.target());
-    std::string users_param;
-    
-    // Parse 'user' comma-separated list from query parameters
-    size_t user_pos = target.find("user=");
-    if (user_pos != std::string::npos) {
-        users_param = std::string(target.substr(user_pos + 5));
-        size_t amp_pos = users_param.find('&');
-        if (amp_pos != std::string::npos) users_param = users_param.substr(0, amp_pos);
-    }
-
-    std::vector<std::string> user_hashes;
-    std::stringstream ss(users_param);
-    std::string item;
-    while (std::getline(ss, item, ',')) {
-        if (!item.empty() && InputValidator::is_valid_hash(item)) {
-            user_hashes.push_back(item);
-        }
-    }
-
-    if (user_hashes.empty()) {
-        http::response<http::string_body> res{http::status::bad_request, req_.version()};
-        res.prepare_payload();
-        return res;
-    }
-
-    // Limit batch size to prevent excessive resource consumption.
-    if (user_hashes.size() > 10) user_hashes.resize(10);
-
-    // Optimized single-user fetch
-    if (user_hashes.size() == 1) {
-        std::string bundle = key_storage_.get_bundle(user_hashes[0]);
-        if (bundle.empty()) {
-            http::response<http::string_body> res{http::status::not_found, req_.version()};
-            res.prepare_payload();
-            return res;
-        }
-        http::response<http::string_body> res{http::status::ok, req_.version()};
-        res.set(http::field::content_type, "application/json");
-        res.body() = bundle;
-        res.prepare_payload();
-        add_security_headers(res);
-        add_cors_headers(res);
-        return res;
-    } else {
-        // Multi-user batch fetch
-        json::object results;
-        for (const auto& h : user_hashes) {
-            std::string b = key_storage_.get_bundle(h);
-            if (!b.empty()) {
-                try {
-                    results[h] = InputValidator::safe_parse_json(b);
-                } catch(...) {}
-            }
-        }
-        http::response<http::string_body> res{http::status::ok, req_.version()};
-        res.set(http::field::content_type, "application/json");
-        res.body() = json::serialize(results);
-        res.prepare_payload();
-        add_security_headers(res);
-        add_cors_headers(res);
-        return res;
-    }
-}
-
-// Returns a set of random identity hashes for "Decoy Traffic" and "Anonymity Set" generation.
-// This allows clients to initiate fake exchanges with random users to mask real activity.
-http::response<http::string_body> HttpSession::handle_keys_random() {
-    // Requires a basic PoW to prevent automated harvesting of the entire identity set.
-    if (!validate_pow(req_, rate_limiter_, remote_addr_, 2)) {
-        json::object error;
-        error["error"] = "Proof-of-Work required for decoy discovery (Difficulty: 2)";
-        http::response<http::string_body> res{http::status::unauthorized, req_.version()};
-        res.set(http::field::content_type, "application/json");
-        res.body() = json::serialize(error);
-        res.prepare_payload();
-        add_security_headers(res);
-        add_cors_headers(res);
-        return res;
-    }
-
-    std::string target = std::string(req_.target());
-    int count = 5;
-    
-    size_t count_pos = target.find("count=");
-    if (count_pos != std::string::npos) {
-        try {
-            std::string sub = target.substr(count_pos + 6);
-            size_t amp = sub.find('&');
-            if (amp != std::string::npos) sub = sub.substr(0, amp);
-            count = std::stoi(sub);
-        } catch(...) {}
-    }
-
-    if (count < 1) count = 1;
-    if (count > 10) count = 10;
-
-    auto hashes = redis_.get_random_user_hashes(count);
-    json::array arr;
-    for (const auto& h : hashes) arr.push_back(json::value(h));
-    
-    json::object response;
-    response["hashes"] = arr;
-
-    http::response<http::string_body> res{http::status::ok, req_.version()};
-    res.set(http::field::content_type, "application/json");
-    res.body() = json::serialize(response);
-    res.prepare_payload();
-    add_security_headers(res);
-    add_cors_headers(res);
-    return res;
-}
-
-// Maps a human-readable nickname to a cryptographic identity hash.
-// Requires high-difficulty PoW to prevent "Nickname Squatting".
-// The registration process cryptographically binds the nickname to the identityKey
-// by requiring a signature over the nickname using the identityKey.
-http::response<http::string_body> HttpSession::handle_nickname_register() {
-    try {
-        auto json_val = InputValidator::safe_parse_json(req_.body());
-        if (!json_val.is_object()) throw std::runtime_error("Not an object");
-        auto& obj = json_val.as_object();
-        
-        std::string nickname;
-        if (obj.contains("nickname") && obj["nickname"].is_string()) {
-            nickname = std::string(obj["nickname"].as_string());
-        }
-        
-        std::string user_hash;
-        if (obj.contains("identity_hash") && obj["identity_hash"].is_string()) {
-            user_hash = std::string(obj["identity_hash"].as_string());
-        }
-        
-        // Basic syntax and length validation for nicknames.
-        if (!InputValidator::is_valid_alphanumeric(nickname) || nickname.length() < 3 || nickname.length() > config_.max_nickname_length) {
-            json::object error;
-            error["error"] = "Invalid nickname: 3-" + std::to_string(config_.max_nickname_length) + " alphanumeric chars only";
-            http::response<http::string_body> res{http::status::bad_request, req_.version()};
-            res.set(http::field::content_type, "application/json");
-            res.body() = json::serialize(error);
-            res.prepare_payload();
-            add_security_headers(res);
-            add_cors_headers(res);
-            return res;
-        }
-
-        if (!InputValidator::is_valid_hash(user_hash)) {
-             json::object error;
-             error["error"] = "Invalid identity_hash";
-             http::response<http::string_body> res{http::status::bad_request, req_.version()};
-             res.set(http::field::content_type, "application/json");
-             res.body() = json::serialize(error);
-             res.prepare_payload();
-             add_security_headers(res);
-             add_cors_headers(res);
-             return res;
-        }
-
-        // Ownership Verification:
-        // Ensures the requestor actually controls the identityKey corresponding to the user_hash.
-        if (obj.contains("identityKey") && obj["identityKey"].is_string()) {
-            std::string ik_b64 = std::string(obj["identityKey"].as_string());
-            
-            std::vector<unsigned char> decoded_key;
-            decoded_key.resize(boost::beast::detail::base64::decoded_size(ik_b64.size()));
-            auto result = boost::beast::detail::base64::decode(decoded_key.data(), ik_b64.c_str(), ik_b64.size());
-            decoded_key.resize(result.first);
-            if (result.first > 0) {
-                unsigned char hash[SHA256_DIGEST_LENGTH];
-                SHA256(decoded_key.data(), decoded_key.size(), hash);
-                std::stringstream ss;
-                for(int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
-                    ss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
-                }
-                if (ss.str() != user_hash) {
-                    json::object error;
-                    error["error"] = "Cryptographic identity mismatch";
-                    http::response<http::string_body> res{http::status::forbidden, req_.version()};
-                    res.set(http::field::content_type, "application/json");
-                    res.body() = json::serialize(error);
-                    res.prepare_payload();
-                    add_security_headers(res);
-                    add_cors_headers(res);
-                    return res;
-                }
-
-                if (!obj.contains("signature") || !obj["signature"].is_string()) {
-                    json::object error;
-                    error["error"] = "Ownership signature required";
-                    http::response<http::string_body> res{http::status::unauthorized, req_.version()};
-                    res.set(http::field::content_type, "application/json");
-                    res.body() = json::serialize(error);
-                    res.prepare_payload();
-                    add_security_headers(res);
-                    add_cors_headers(res);
-                    return res;
-                }
-
-                std::string sig_b64 = std::string(obj.at("signature").as_string());
-                std::vector<unsigned char> decoded_sig;
-                decoded_sig.resize(boost::beast::detail::base64::decoded_size(sig_b64.size()));
-                auto sig_res = boost::beast::detail::base64::decode(decoded_sig.data(), sig_b64.c_str(), sig_b64.size());
-                decoded_sig.resize(sig_res.first);
-
-                std::vector<unsigned char> msg_vec(nickname.begin(), nickname.end());
-                if (!InputValidator::verify_ed25519(decoded_key, msg_vec, decoded_sig)) {
-                    json::object error;
-                    error["error"] = "Invalid ownership signature";
-                    http::response<http::string_body> res{http::status::forbidden, req_.version()};
-                    res.set(http::field::content_type, "application/json");
-                    res.body() = json::serialize(error);
-                    res.prepare_payload();
-                    add_security_headers(res);
-                    add_cors_headers(res);
-                    return res;
-                }
-            }
-        } else {
-             json::object error;
-             error["error"] = "identityKey required for registration";
-             http::response<http::string_body> res{http::status::bad_request, req_.version()};
-             res.set(http::field::content_type, "application/json");
-             res.body() = json::serialize(error);
-             res.prepare_payload();
-             add_security_headers(res);
-             add_cors_headers(res);
-             return res;
-        }
-
-        // Dynamic PoW Difficulty Scaling:
-        // Difficulty increases if frequent registrations are detected from arbitrary IPs.
-        int intensity_penalty = 0;
-        int intensity = redis_.get_registration_intensity();
-        if (intensity > 10) intensity_penalty = 2;
-        if (intensity > 50) intensity_penalty = 4;
-        if (intensity > 200) intensity_penalty = 8;
-        
-        long long age = redis_.get_account_age(user_hash);
-
-        int required_difficulty = PoWVerifier::get_difficulty_for_nickname(nickname, intensity_penalty, age);
-        if (!validate_pow(req_, rate_limiter_, remote_addr_, required_difficulty, nickname)) {
-             json::object error;
-             error["error"] = "Invalid or Missing Proof-of-Work (Target: " + std::to_string(required_difficulty) + ")";
-             http::response<http::string_body> res{http::status::unauthorized, req_.version()};
-             res.set(http::field::content_type, "application/json");
-             res.body() = json::serialize(error);
-             res.prepare_payload();
-             add_security_headers(res);
-             add_cors_headers(res);
-             return res;
-        }
-
-        if (redis_.register_nickname(nickname, user_hash)) {
-            json::object response;
-            response["status"] = "success";
-            response["nickname"] = nickname;
-            http::response<http::string_body> res{http::status::ok, req_.version()};
-            res.set(http::field::content_type, "application/json");
-            res.body() = json::serialize(response);
-            res.prepare_payload();
-            add_security_headers(res);
-            add_cors_headers(res);
-            return res;
-        } else {
-            json::object error;
-            error["error"] = "Nickname already taken";
-            http::response<http::string_body> res{http::status::conflict, req_.version()};
-            res.set(http::field::content_type, "application/json");
-            res.body() = json::serialize(error);
-            res.prepare_payload();
-            add_security_headers(res);
-            add_cors_headers(res);
-            return res;
-        }
-    } catch (...) {
-        json::object error;
-        error["error"] = "Invalid request";
-        http::response<http::string_body> res{http::status::bad_request, req_.version()};
-        res.set(http::field::content_type, "application/json");
-        res.body() = json::serialize(error);
-        res.prepare_payload();
-        add_security_headers(res);
-        add_cors_headers(res);
-        return res;
-    }
-}
-
-// Resolves a human-readable nickname to its cryptographically bound identity hash.
-http::response<http::string_body> HttpSession::handle_nickname_lookup() {
-    std::string target = std::string(req_.target());
-    std::string names_param;
-    
-    size_t name_pos = target.find("name=");
-    if (name_pos != std::string::npos) {
-        names_param = std::string(target.substr(name_pos + 5));
-        size_t amp_pos = names_param.find('&');
-        if (amp_pos != std::string::npos) names_param = names_param.substr(0, amp_pos);
-    }
-
-    std::vector<std::string> nicknames;
-    {
-        std::stringstream ss(names_param);
-        std::string item;
-        while (std::getline(ss, item, ',')) {
-            if (!item.empty()) nicknames.push_back(item);
-        }
-    }
-
-    if (nicknames.empty()) {
-        http::response<http::string_body> res{http::status::bad_request, req_.version()};
-        res.prepare_payload();
-        return res;
-    }
-
-    if (nicknames.size() > 10) nicknames.resize(10);
-
-    if (nicknames.size() == 1) {
-        std::string user_hash = redis_.resolve_nickname(nicknames[0]);
-        if (user_hash.empty()) {
-            http::response<http::string_body> res{http::status::not_found, req_.version()};
-            res.prepare_payload();
-            return res;
-        }
-        json::object response;
-        response["identity_hash"] = user_hash;
-        response["nickname"] = nicknames[0];
-        http::response<http::string_body> res{http::status::ok, req_.version()};
-        res.set(http::field::content_type, "application/json");
-        res.body() = json::serialize(response);
-        res.prepare_payload();
-        add_security_headers(res);
-        add_cors_headers(res);
-        return res;
-    } else {
-        json::object results;
-        for (const auto& nick : nicknames) {
-            std::string h = redis_.resolve_nickname(nick);
-            if (!h.empty()) results[nick] = h;
-        }
-        http::response<http::string_body> res{http::status::ok, req_.version()};
-        res.set(http::field::content_type, "application/json");
-        res.body() = json::serialize(results);
-        res.prepare_payload();
-        add_security_headers(res);
-        add_cors_headers(res);
-        return res;
-    }
-}
+// Deprecated/Moved methods block removed
 
 // Blinds an IP address using the server's secret salt.
-// This is used for internal tracking and rate limiting without storing raw IP addresses,
-// enhancing user privacy while maintaining operational security.
 std::string HttpSession::blind_ip(const std::string& ip) {
     std::string data = ip + config_.secret_salt;
     unsigned char hash[SHA256_DIGEST_LENGTH];
@@ -1117,55 +523,8 @@ http::response<http::string_body> HttpSession::handle_rate_limited(const RateLim
     return res;
 }
 
-http::response<http::string_body> HttpSession::handle_pow_challenge() {
-    std::string seed = rate_limiter_.issue_challenge(60); 
-    
-    std::string target = std::string(req_.target());
-    
-    int intensity_penalty = 0;
-    int intensity = redis_.get_registration_intensity();
-    if (intensity > 10) intensity_penalty = 2;
-    if (intensity > 50) intensity_penalty = 4;
-    if (intensity > 200) intensity_penalty = 8;
+// PoW challenge moved
 
-    
-    long long age = 0;
-    size_t hash_pos = target.find("identity_hash=");
-    if (hash_pos != std::string::npos) {
-        std::string id_hash = std::string(target.substr(hash_pos + 14));
-        size_t amp_pos = id_hash.find('&');
-        if (amp_pos != std::string::npos) id_hash = id_hash.substr(0, amp_pos);
-        if (!id_hash.empty()) age = redis_.get_account_age(id_hash);
-    }
-
-    int difficulty = PoWVerifier::get_required_difficulty(intensity_penalty, age);
-
-    
-    size_t nick_pos = target.find("nickname=");
-    if (nick_pos != std::string::npos) {
-        std::string nick = std::string(target.substr(nick_pos + 9));
-        size_t amp_pos = nick.find('&');
-        if (amp_pos != std::string::npos) nick = nick.substr(0, amp_pos);
-        if (!nick.empty()) difficulty = PoWVerifier::get_difficulty_for_nickname(nick, intensity_penalty, age);
-    }
-
-
-    
-    json::object response;
-    response["seed"] = seed;
-    response["difficulty"] = difficulty;
-
-    
-    http::response<http::string_body> res{http::status::ok, req_.version()};
-    res.set(http::field::content_type, "application/json");
-    res.body() = json::serialize(response);
-    res.prepare_payload();
-    
-    add_security_headers(res);
-    add_cors_headers(res);
-    
-    return res;
-}
 
 template<class Body>
 void HttpSession::add_security_headers(http::response<Body>& res) {
@@ -1273,110 +632,8 @@ void HttpSession::on_write(bool close, beast::error_code ec, std::size_t  ) {
 }
 
 // Authoritatively purges all data associated with an identity hash.
-// This is a "Forensic Burn": it removes the public key bundle and any associated nicknames
-// from the persistent storage to ensure forward secrecy and user right-to-erasure.
-// Requires a high-difficulty PoW and a cryptographic signature to prove ownership.
-http::response<http::string_body> HttpSession::handle_account_burn() {
-    try {
-        auto json_val = InputValidator::safe_parse_json(req_.body());
-        if (!json_val.is_object()) throw std::runtime_error("Invalid payload");
-        auto& obj = json_val.as_object();
-        
-        std::string user_hash;
-        if (obj.contains("identity_hash") && obj["identity_hash"].is_string()) {
-            user_hash = std::string(obj["identity_hash"].as_string());
-        }
+// Account burn logic moved to IdentityHandler
 
-        // Verify high-difficulty Proof-of-Work to prevent mass-exhaustion of the burn API.
-        if (!validate_pow(req_, rate_limiter_, remote_addr_, 5, user_hash)) { 
-            json::object error;
-            error["error"] = "Invalid PoW for burn request";
-            http::response<http::string_body> res{http::status::unauthorized, req_.version()};
-            res.set(http::field::content_type, "application/json");
-            res.body() = json::serialize(error);
-            res.prepare_payload();
-            add_security_headers(res);
-            add_cors_headers(res);
-            return res;
-        }
-
-        // Cryptographic proof of ownership:
-        // Requires a signature over "BURN:<user_hash>" using the identity's Ed25519 private key.
-        if (obj.contains("identityKey") && obj["identityKey"].is_string()) {
-            std::string ik_b64 = std::string(obj["identityKey"].as_string());
-            
-            std::vector<unsigned char> decoded_key;
-            decoded_key.resize(boost::beast::detail::base64::decoded_size(ik_b64.size()));
-            auto result = boost::beast::detail::base64::decode(decoded_key.data(), ik_b64.c_str(), ik_b64.size());
-            decoded_key.resize(result.first);
-
-            if (result.first > 0) {
-                unsigned char hash[SHA256_DIGEST_LENGTH];
-                SHA256(decoded_key.data(), decoded_key.size(), hash);
-                std::stringstream ss;
-                for(int i = 0; i < SHA256_DIGEST_LENGTH; i++) ss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
-                if (ss.str() != user_hash) {
-                    http::response<http::string_body> res{http::status::forbidden, req_.version()};
-                    res.prepare_payload();
-                    add_security_headers(res);
-                    add_cors_headers(res);
-                    return res;
-                }
-
-                if (!obj.contains("signature") || !obj["signature"].is_string()) throw std::runtime_error("Signature missing");
-                
-                std::string sig_b64 = std::string(obj.at("signature").as_string());
-                std::vector<unsigned char> decoded_sig;
-                decoded_sig.resize(boost::beast::detail::base64::decoded_size(sig_b64.size()));
-                auto sig_res = boost::beast::detail::base64::decode(decoded_sig.data(), sig_b64.c_str(), sig_b64.size());
-                decoded_sig.resize(sig_res.first);
-
-                std::string msg = "BURN:" + user_hash;
-                std::vector<unsigned char> msg_vec(msg.begin(), msg.end());
-                if (!InputValidator::verify_ed25519(decoded_key, msg_vec, decoded_sig)) {
-                      throw std::runtime_error("Invalid signature");
-                }
-            }
-        } else {
-            throw std::runtime_error("identityKey required");
-        }
-
-        // Atomically remove all metadata from Redis and disk.
-        if (redis_.burn_account(user_hash)) {
-            SecurityLogger::log(SecurityLogger::Level::CRITICAL, SecurityLogger::EventType::SUSPICIOUS_ACTIVITY,
-                               remote_addr_, "Account burned and purged: " + user_hash);
-            json::object ok;
-            ok["status"] = "account_purged";
-            http::response<http::string_body> res{http::status::ok, req_.version()};
-            res.set(http::field::content_type, "application/json");
-            res.body() = json::serialize(ok);
-            res.prepare_payload();
-            add_security_headers(res);
-            add_cors_headers(res);
-            return res;
-        }
-
-        http::response<http::string_body> res{http::status::internal_server_error, req_.version()};
-        res.prepare_payload();
-        return res;
-    } catch (const std::exception& e) {
-        json::object error;
-        error["error"] = e.what();
-        http::response<http::string_body> res{http::status::bad_request, req_.version()};
-        res.set(http::field::content_type, "application/json");
-        res.body() = json::serialize(error);
-        res.prepare_payload();
-        add_security_headers(res);
-        add_cors_headers(res);
-        return res;
-    } catch (...) {
-        http::response<http::string_body> res{http::status::bad_request, req_.version()};
-        res.prepare_payload();
-        add_security_headers(res);
-        add_cors_headers(res);
-        return res;
-    }
-}
 
 // Transitions the HTTP session to a long-lived WebSocket session.
 // This involves moving ownership of the underlying TCP/SSL stream.
@@ -1471,7 +728,8 @@ void HttpSession::upgrade_to_websocket() {
                     json::object pong;
                     pong["type"] = "pong";
                     if (obj.contains("timestamp")) pong["timestamp"] = obj["timestamp"];
-                    MessageRelay::pad_json(pong, 1536);
+                    if (obj.contains("timestamp")) pong["timestamp"] = obj["timestamp"];
+                    TrafficNormalizer::pad_json(pong, 1536);
                     session->send_text(json::serialize(pong));
                     return;
                 }
@@ -1486,7 +744,7 @@ void HttpSession::upgrade_to_websocket() {
                         
                         std::string id_hash;
                         if (auth_payload.contains("identity_hash")) id_hash = std::string(auth_payload["identity_hash"].as_string());
-                        std::string hash = MessageRelay::sanitize_field(id_hash, 256);
+                        std::string hash = InputValidator::sanitize_field(id_hash, 256);
 
                         bool auth_valid = false;
 
@@ -1525,7 +783,9 @@ void HttpSession::upgrade_to_websocket() {
                              error["type"] = "error";
                              error["code"] = "auth_failed";
                              error["message"] = "Authentication failed. Token may be expired.";
-                             MessageRelay::pad_json(error, 1536);
+                             error["code"] = "auth_failed";
+                             error["message"] = "Authentication failed. Token may be expired.";
+                             TrafficNormalizer::pad_json(error, 1536);
                              session->send_text(json::serialize(error));
                              
                              session->close();
@@ -1539,7 +799,8 @@ void HttpSession::upgrade_to_websocket() {
                             error["type"] = "error";
                             error["code"] = "connection_limit";
                             error["message"] = "Too many connections from your IP address";
-                            MessageRelay::pad_json(error, 1536);
+                            error["message"] = "Too many connections from your IP address";
+                            TrafficNormalizer::pad_json(error, 1536);
                             session->send_text(json::serialize(error));
                             session->close();
                             return;
@@ -1564,7 +825,9 @@ void HttpSession::upgrade_to_websocket() {
                         
                         response["keys_missing"] = key_storage_ptr->get_bundle(hash).empty();
                         
-                        MessageRelay::pad_json(response, 1536);
+                        response["keys_missing"] = key_storage_ptr->get_bundle(hash).empty();
+                        
+                        TrafficNormalizer::pad_json(response, 1536);
                         session->send_text(json::serialize(response));
                         
                         relay_ptr->deliver_pending(hash, session);
@@ -1609,7 +872,7 @@ void HttpSession::upgrade_to_websocket() {
                             
                             if (alias_payload.contains("alias") && alias_payload["alias"].is_string()) {
                                 std::string alias = std::string(alias_payload["alias"].as_string());
-                                std::string safe_alias = MessageRelay::sanitize_field(alias, 256);
+                                std::string safe_alias = InputValidator::sanitize_field(alias, 256);
 
                                 if (seed.empty() || nonce.empty() || !rate_limiter_ptr->consume_challenge(seed) || 
                                     !::entropy::PoWVerifier::verify(seed, nonce, safe_alias)) {
@@ -1628,7 +891,7 @@ void HttpSession::upgrade_to_websocket() {
                                     json::object response;
                                     response["type"] = "alias_subscribed";
                                     response["alias"] = safe_alias;
-                                    MessageRelay::pad_json(response, 1536);
+                                    TrafficNormalizer::pad_json(response, 1536);
                                     session->send_text(json::serialize(response));
                                 } else if (!safe_alias.empty()) {
                                     json::object error;
@@ -1722,26 +985,7 @@ void HttpSession::upgrade_to_websocket() {
 template void ::entropy::HttpSession::add_security_headers(http::response<http::string_body>&);
 template void ::entropy::HttpSession::add_cors_headers(http::response<http::string_body>&);
 
-bool HttpSession::verify_admin_request() {
-    
-    if (remote_addr_ == "127.0.0.1" || remote_addr_ == "::1") {
-        return true;
-    }
 
-    
-    if (config_.admin_token.empty()) {
-        return false;
-    }
-
-    auto auth_it = req_.find("X-Admin-Token");
-    if (auth_it == req_.end()) {
-        return false;
-    }
-
-    
-    std::string provided_token(auth_it->value());
-    return provided_token == config_.admin_token;
-}
 
 } 
     

@@ -60,6 +60,26 @@ public:
             return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-';
         });
     }
+
+    // Filters and limits string input to alphanumeric/underscores to prevent injection.
+    static std::string sanitize_field(const std::string& input, size_t max_length = 256) {
+        if (input.empty()) return input;
+        
+        std::string result;
+        result.reserve(std::min(input.size(), max_length));
+        
+        for (size_t i = 0; i < input.size() && result.size() < max_length; ++i) {
+            char c = input[i];
+            
+            if (std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-' || c == ' ') {
+                result += c;
+            } else {
+                result += ' ';
+            }
+        }
+        
+        return result;
+    }
     
     static bool is_within_size_limit(size_t size, size_t max_size) {
         return size <= max_size;

@@ -21,9 +21,7 @@ struct RateLimitResult {
     long long limit;
     long long reset_after_sec;
 };
-// Redis-backed state and message distribution manager.
-// Implements KeyStorage for identity bundles and provides atomic rate limiting,
-// Pub/Sub messaging, and session tracking.
+// Redis-backed state manager for rate limiting, Pub/Sub, and identity storage.
 class RedisManager : public KeyStorage {
 public:
     using MessageHandler = std::function<void(const std::string& channel, const std::string& msg)>;

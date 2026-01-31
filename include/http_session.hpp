@@ -12,7 +12,9 @@
 #include "server_config.hpp"
 #include "key_storage.hpp"
 
-#include "redis_manager.hpp" 
+#include "redis_manager.hpp"
+#include "handlers/health_handler.hpp"
+#include "handlers/identity_handler.hpp" 
 
 namespace beast = boost::beast;
 namespace http = beast::http;
@@ -75,6 +77,10 @@ private:
     KeyStorage& key_storage_;
     RedisManager& redis_;
     
+    // Handlers
+    HealthHandler health_handler_;
+    IdentityHandler identity_handler_;
+    
     std::string remote_addr_;
     
     void on_handshake(beast::error_code ec);
@@ -89,25 +95,13 @@ private:
     
     void upgrade_to_websocket();
     
-    
-    http::response<http::string_body> handle_health();
-    http::response<http::string_body> handle_stats();
-    http::response<http::string_body> handle_metrics();
+    // Delegated to Handlers or retained wrappers
     http::response<http::string_body> handle_cors_preflight();
     http::response<http::string_body> handle_not_found();
     http::response<http::string_body> handle_rate_limited(const RateLimitResult& res_info);
-    
-    http::response<http::string_body> handle_keys_upload();
-    http::response<http::string_body> handle_keys_fetch();
-    http::response<http::string_body> handle_keys_random();
-    http::response<http::string_body> handle_pow_challenge();
-    
-    http::response<http::string_body> handle_nickname_register();
-    http::response<http::string_body> handle_nickname_lookup();
-    http::response<http::string_body> handle_account_burn();
-    
+
     std::string blind_ip(const std::string& ip);
-    bool verify_admin_request();
+
 
     
     

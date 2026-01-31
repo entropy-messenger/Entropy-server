@@ -1,5 +1,6 @@
 version: '3.8'
 
+# Entropy Infrastructure: Professional Secure Messaging Relay
 services:
   entropy-relay:
     build: .
@@ -11,7 +12,7 @@ services:
       - ENTROPY_PORT=8080
       - ENTROPY_ADDR=0.0.0.0
       - ENTROPY_REDIS_URL=redis://redis:6379
-      - ENTROPY_SECRET_SALT=${ENTROPY_SECRET_SALT:-CHANGE_ME_VERY_IMPORTANT}
+      - ENTROPY_SECRET_SALT=${ENTROPY_SECRET_SALT:-CHANGE_ME}
       - ENTROPY_ALLOWED_ORIGINS=${ENTROPY_ALLOWED_ORIGINS:-*}
     depends_on:
       - redis

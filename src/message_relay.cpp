@@ -1,5 +1,6 @@
 #include "message_relay.hpp"
 #include "websocket_session.hpp"
+#include "traffic_normalizer.hpp"
 
 #include <boost/json.hpp>
 #include <iostream>
@@ -24,41 +25,12 @@ namespace entropy {
 
 // Appends random white-space padding to JSON objects to ensure constant packet size.
 // This is used to prevent side-channel analysis of message lengths.
-void MessageRelay::pad_json(boost::json::object& obj, size_t target_size) {
-    std::string current = boost::json::serialize(obj);
-    if (current.size() >= target_size) return;
-    
-    size_t needed = target_size - current.size();
-    
-    // Minimum overhead for "padding": "..." 
-    if (needed < 15) return; 
-    
-    std::string pad_str(needed - 13, ' ');
-    obj["padding"] = pad_str;
-}
+
 
 MessageRelay::MessageRelay(ConnectionManager& conn_manager, RedisManager& redis, RateLimiter& rate_limiter)
     : conn_manager_(conn_manager), redis_(redis), rate_limiter_(rate_limiter) {}
 
-// Filters and limits string input to alphanumeric/underscores to prevent injection.
-std::string MessageRelay::sanitize_field(const std::string& input, size_t max_length) {
-    if (input.empty()) return input;
-    
-    std::string result;
-    result.reserve(std::min(input.size(), max_length));
-    
-    for (size_t i = 0; i < input.size() && result.size() < max_length; ++i) {
-        char c = input[i];
-        
-        if (std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-' || c == ' ') {
-            result += c;
-        } else {
-            result += ' ';
-        }
-    }
-    
-    return result;
-}
+
 
 // Quickly extracts message metadata without full payload deserialization where possible.
 MessageRelay::RoutingInfo MessageRelay::extract_routing(const std::string& message_json) {
@@ -72,16 +44,15 @@ MessageRelay::RoutingInfo MessageRelay::extract_routing(const std::string& messa
         
         auto& obj = json_val.as_object();
         
-        // Extract type and destination identifier (public key hash)
         if (obj.contains("type") && (obj["type"].is_string() || obj["type"].is_number())) {
             if (obj["type"].is_string()) {
-                info.type = sanitize_field(std::string(obj["type"].as_string()), 64);
+                info.type = InputValidator::sanitize_field(std::string(obj["type"].as_string()), 64);
             } else {
                 info.type = std::to_string(obj["type"].as_int64());
             }
         }
         if (obj.contains("to") && obj["to"].is_string()) {
-            info.to = sanitize_field(std::string(obj["to"].as_string()), 256);
+            info.to = InputValidator::sanitize_field(std::string(obj["to"].as_string()), 256);
         }
 
         info.valid = !info.type.empty();
@@ -128,7 +99,7 @@ void MessageRelay::relay_message(const std::string& message_json,
         // Ensure the message reaches the minimum threshold for packet padding
         if (final_json.size() < REQUIRED_PACKET_SIZE) {
              json::object padded_obj = clean_msg;
-             pad_json(padded_obj, REQUIRED_PACKET_SIZE);
+             TrafficNormalizer::pad_json(padded_obj, REQUIRED_PACKET_SIZE);
              final_json = json::serialize(padded_obj);
         }
 
@@ -177,7 +148,7 @@ void MessageRelay::relay_message(const std::string& message_json,
                     response["message"] = "Recipient offline and storage unavailable";
                 }
                 
-                pad_json(response, REQUIRED_PACKET_SIZE);
+                TrafficNormalizer::pad_json(response, REQUIRED_PACKET_SIZE);
                 std::string ack_str = json::serialize(response);
                 
                 ack_timer->async_wait([sender, ack_str, ack_timer](const boost::system::error_code& ec) {
@@ -213,7 +184,7 @@ void MessageRelay::relay_binary(const std::string& recipient_hash,
         return;
     }
     
-    std::string safe_hash = sanitize_field(recipient_hash, 256);
+    std::string safe_hash = InputValidator::sanitize_field(recipient_hash, 256);
     if (safe_hash.empty()) return;
     
     auto recipient = conn_manager_.get_connection(safe_hash);
@@ -239,7 +210,7 @@ void MessageRelay::relay_binary(const std::string& recipient_hash,
                     json::object response;
                     response["type"] = "relay_success";
                     response["status"] = "relayed";
-                    pad_json(response, REQUIRED_PACKET_SIZE);
+                    TrafficNormalizer::pad_json(response, REQUIRED_PACKET_SIZE);
                     sender->send_text(json::serialize(response));
                 }
             });
@@ -269,7 +240,7 @@ void MessageRelay::relay_binary(const std::string& recipient_hash,
         response["type"] = "delivery_status";
         response["target"] = safe_hash;
         response["status"] = "relayed";
-        pad_json(response, REQUIRED_PACKET_SIZE);
+        TrafficNormalizer::pad_json(response, REQUIRED_PACKET_SIZE);
         std::string ack_str = json::serialize(response);
 
         ack_timer->async_wait([sender, ack_str, ack_timer](const boost::system::error_code& ec) {
@@ -283,7 +254,7 @@ void MessageRelay::relay_binary(const std::string& recipient_hash,
 void MessageRelay::relay_volatile(const std::string& recipient_hash,
                                   const void* data,
                                   size_t length) {
-    std::string safe_hash = sanitize_field(recipient_hash, 256);
+    std::string safe_hash = InputValidator::sanitize_field(recipient_hash, 256);
     if (safe_hash.empty()) return;
 
     auto recipient = conn_manager_.get_connection(safe_hash);
@@ -342,7 +313,7 @@ void MessageRelay::relay_multicast(const std::vector<std::string>& recipients,
         final_json = json::serialize(clean_msg);
         if (final_json.size() < REQUIRED_PACKET_SIZE) {
             json::object padded_obj = clean_msg;
-            MessageRelay::pad_json(padded_obj, REQUIRED_PACKET_SIZE);
+            TrafficNormalizer::pad_json(padded_obj, REQUIRED_PACKET_SIZE);
             final_json = json::serialize(padded_obj);
         }
     } catch (...) {
@@ -359,7 +330,7 @@ void MessageRelay::relay_multicast(const std::vector<std::string>& recipients,
     for (size_t i = 0; i < recipient_count; ++i) {
         const auto& recipient_hash = recipients[i];
         if (recipient_hash.empty()) continue;
-        std::string safe_to = sanitize_field(recipient_hash, 256);
+        std::string safe_to = InputValidator::sanitize_field(recipient_hash, 256);
         
         auto conn = conn_manager_.get_connection(safe_to);
         if (conn) {
@@ -407,7 +378,7 @@ void MessageRelay::relay_group_message(const boost::json::array& targets,
             if (!target_obj.contains("to") || !target_obj.contains("body")) continue;
             
             std::string to = std::string(target_obj.at("to").as_string());
-            std::string safe_to = sanitize_field(to, 256);
+            std::string safe_to = InputValidator::sanitize_field(to, 256);
             
             json::object clean_msg;
             clean_msg["type"] = "sealed_message";
@@ -416,7 +387,7 @@ void MessageRelay::relay_group_message(const boost::json::array& targets,
             
             std::string final_json = json::serialize(clean_msg);
             if (final_json.size() < REQUIRED_PACKET_SIZE) {
-                pad_json(clean_msg, REQUIRED_PACKET_SIZE);
+                TrafficNormalizer::pad_json(clean_msg, REQUIRED_PACKET_SIZE);
                 final_json = json::serialize(clean_msg);
             }
 
@@ -436,7 +407,7 @@ void MessageRelay::handle_dummy(std::shared_ptr<WebSocketSession> sender) {
     auto ack = std::make_shared<json::object>();
     (*ack)["type"] = "dummy_ack";
     (*ack)["timestamp"] = std::time(nullptr);
-    pad_json(*ack, SYSTEM_MSG_PADDING); 
+    TrafficNormalizer::pad_json(*ack, SYSTEM_MSG_PADDING); 
     
     thread_local std::mt19937 gen{std::random_device{}()};
     std::uniform_int_distribution<> dis(10, 50);

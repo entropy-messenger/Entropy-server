@@ -10,9 +10,7 @@
 
 namespace entropy {
 
-// Privacy-preserving Security Logger.
-// Implements blinded logging where remote IP addresses are hashed with a rotating salt.
-// This prevents long-term tracking of users while allowing short-term correlation for security analysis.
+// Logs security events using blinded IP identifiers (salted hash).
 class SecurityLogger {
 public:
     enum class Level {

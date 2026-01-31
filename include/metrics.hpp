@@ -9,8 +9,7 @@
 namespace entropy {
 
  
-// Singleton Metrics Registry for operational visibility.
-// Provides thread-safe counters and gauges that can be exported in Prometheus format.
+// Singleton registry for thread-safe metrics collection.
 class MetricsRegistry {
 public:
     /**
