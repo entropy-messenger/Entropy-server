@@ -1,0 +1,492 @@
+#include "message_relay.hpp"
+#include "websocket_session.hpp"
+
+#include <boost/json.hpp>
+#include <iostream>
+#include <algorithm>
+#include <cctype>
+#include <iomanip>
+#include <sstream>
+#include <openssl/sha.h>
+#include "metrics.hpp"
+#include "pow_verifier.hpp"
+#include <random>
+#include <thread>
+#include <boost/asio/steady_timer.hpp>
+#include "input_validator.hpp"
+
+static const size_t REQUIRED_PACKET_SIZE = 1536; 
+static const size_t SYSTEM_MSG_PADDING = 1536;
+
+namespace json = boost::json;
+
+namespace entropy {
+
+// Appends random white-space padding to JSON objects to ensure constant packet size.
+// This is used to prevent side-channel analysis of message lengths.
+void MessageRelay::pad_json(boost::json::object& obj, size_t target_size) {
+    std::string current = boost::json::serialize(obj);
+    if (current.size() >= target_size) return;
+    
+    size_t needed = target_size - current.size();
+    
+    // Minimum overhead for "padding": "..." 
+    if (needed < 15) return; 
+    
+    std::string pad_str(needed - 13, ' ');
+    obj["padding"] = pad_str;
+}
+
+MessageRelay::MessageRelay(ConnectionManager& conn_manager, RedisManager& redis, RateLimiter& rate_limiter)
+    : conn_manager_(conn_manager), redis_(redis), rate_limiter_(rate_limiter) {}
+
+// Filters and limits string input to alphanumeric/underscores to prevent injection.
+std::string MessageRelay::sanitize_field(const std::string& input, size_t max_length) {
+    if (input.empty()) return input;
+    
+    std::string result;
+    result.reserve(std::min(input.size(), max_length));
+    
+    for (size_t i = 0; i < input.size() && result.size() < max_length; ++i) {
+        char c = input[i];
+        
+        if (std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-' || c == ' ') {
+            result += c;
+        } else {
+            result += ' ';
+        }
+    }
+    
+    return result;
+}
+
+// Quickly extracts message metadata without full payload deserialization where possible.
+MessageRelay::RoutingInfo MessageRelay::extract_routing(const std::string& message_json) {
+    RoutingInfo info{.type = "", .to = "", .valid = false};
+    
+    try {
+        auto json_val = InputValidator::safe_parse_json(message_json);
+        if (!json_val.is_object()) {
+            return info;
+        }
+        
+        auto& obj = json_val.as_object();
+        
+        // Extract type and destination identifier (public key hash)
+        if (obj.contains("type") && (obj["type"].is_string() || obj["type"].is_number())) {
+            if (obj["type"].is_string()) {
+                info.type = sanitize_field(std::string(obj["type"].as_string()), 64);
+            } else {
+                info.type = std::to_string(obj["type"].as_int64());
+            }
+        }
+        if (obj.contains("to") && obj["to"].is_string()) {
+            info.to = sanitize_field(std::string(obj["to"].as_string()), 256);
+        }
+
+        info.valid = !info.type.empty();
+    } catch (...) {}
+    
+    return info;
+}
+
+// Core routing logic. Routes messages to local sessions or pushes to Redis for remote instances.
+void MessageRelay::relay_message(const std::string& message_json, 
+                                  std::shared_ptr<WebSocketSession> sender) {
+    
+    if (!validate_message_size(message_json.size())) {
+        MetricsRegistry::instance().increment_counter("message_error_total", 1.0);
+        return;
+    }
+    
+    MetricsRegistry::instance().increment_counter("message_total");
+    
+    auto routing = extract_routing(message_json);
+    if (!routing.valid) {
+        return;
+    }
+
+    // Handle heartbeats and dummy packets for traffic normalization
+    if (routing.type == "ping" || routing.type == "dummy") {
+        handle_dummy(sender);
+        return;
+    }
+    
+    try {
+        auto json_val = InputValidator::safe_parse_json(message_json);
+        if (!json_val.is_object()) return;
+        auto& obj = json_val.as_object();
+        
+        // Strip non-essential fields to normalize the message body
+        json::object clean_msg;
+        if (obj.contains("type")) clean_msg["type"] = obj["type"];
+        clean_msg["body"] = obj["body"];
+        if (obj.contains("pow")) clean_msg["pow"] = obj["pow"];
+        
+        std::string final_json = json::serialize(clean_msg);
+        
+        // Ensure the message reaches the minimum threshold for packet padding
+        if (final_json.size() < REQUIRED_PACKET_SIZE) {
+             json::object padded_obj = clean_msg;
+             pad_json(padded_obj, REQUIRED_PACKET_SIZE);
+             final_json = json::serialize(padded_obj);
+        }
+
+        // Random jitter to mitigate timing analysis attacks
+        thread_local std::mt19937 gen{std::random_device{}()};
+        std::uniform_int_distribution<> dis(10, 50); 
+        
+        if (!routing.to.empty()) {
+            
+            // Apply recipient-side flood protection
+            auto rcv_limit = rate_limiter_.check("rcv:" + routing.to, 100, 10); 
+            if (!rcv_limit.allowed) {
+                MetricsRegistry::instance().increment_counter("recipient_flood_blocked");
+                return; 
+            }
+
+            auto recipient = conn_manager_.get_connection(routing.to);
+            if (recipient) {
+                // Local delivery (async with jitter)
+                auto timer = std::make_shared<boost::asio::steady_timer>(recipient->get_executor());
+                timer->expires_after(std::chrono::milliseconds(dis(gen)));
+                
+                timer->async_wait([recipient, final_json, timer](const boost::system::error_code& ec) {
+                    if (!ec) {
+                        recipient->send_text(final_json);
+                    }
+                });
+            } else {
+                // Remote delivery via Redis and temporary encryption-store for offline recipients
+                redis_.publish_message(routing.to, final_json);
+                bool stored = redis_.store_offline_message(routing.to, final_json);
+                
+                auto ack_timer = std::make_shared<boost::asio::steady_timer>(sender->get_executor());
+                ack_timer->expires_after(std::chrono::milliseconds(dis(gen)));
+                
+                json::object response;
+                
+                if (stored) {
+                    response["type"] = "delivery_status";
+                    response["target"] = routing.to;
+                    response["status"] = "relayed";
+                } else {
+                    MetricsRegistry::instance().increment_counter("storage_failure");
+                    response["type"] = "error";
+                    response["code"] = "storage_failed";
+                    response["message"] = "Recipient offline and storage unavailable";
+                }
+                
+                pad_json(response, REQUIRED_PACKET_SIZE);
+                std::string ack_str = json::serialize(response);
+                
+                ack_timer->async_wait([sender, ack_str, ack_timer](const boost::system::error_code& ec) {
+                    if (!ec) {
+                        sender->send_text(ack_str);
+                    }
+                });
+            }
+        } else {
+             std::cerr << "[!] Message delivery aborted: No recipient identifier provided\n";
+        }
+    } catch (...) {}
+}
+
+// Routes raw binary data directly to sessions. Primarily used for low-latency P2P signals.
+void MessageRelay::relay_binary(const std::string& recipient_hash,
+                                 const void* data, 
+                                 size_t length,
+                                 std::shared_ptr<WebSocketSession> sender) {
+    
+    if (!validate_message_size(length)) {
+        std::cerr << "[!] Binary data exceeds maximum size limit\n";
+        return;
+    }
+
+    if (!sender->is_authenticated()) {
+        std::cerr << "[!] Unauthenticated binary relay blocked\n";
+        json::object err;
+        err["type"] = "error";
+        err["code"] = "auth_required";
+        err["message"] = "Login or Proof-of-Work required for binary relay";
+        sender->send_text(json::serialize(err));
+        return;
+    }
+    
+    std::string safe_hash = sanitize_field(recipient_hash, 256);
+    if (safe_hash.empty()) return;
+    
+    auto recipient = conn_manager_.get_connection(safe_hash);
+    if (recipient) {
+        try {
+            std::string payload(static_cast<const char*>(data), length);
+            
+            // Binary normalization
+            if (payload.size() < REQUIRED_PACKET_SIZE) {
+                payload.resize(REQUIRED_PACKET_SIZE, '\0');
+            }
+            
+            thread_local std::mt19937 gen{std::random_device{}()};
+            std::uniform_int_distribution<> dis(10, 50);
+            
+            auto timer = std::make_shared<boost::asio::steady_timer>(recipient->get_executor());
+            timer->expires_after(std::chrono::milliseconds(dis(gen)));
+            
+            timer->async_wait([recipient, payload, sender, timer](const boost::system::error_code& ec) {
+                if (!ec) {
+                    recipient->send_binary(payload);
+                    
+                    json::object response;
+                    response["type"] = "relay_success";
+                    response["status"] = "relayed";
+                    pad_json(response, REQUIRED_PACKET_SIZE);
+                    sender->send_text(json::serialize(response));
+                }
+            });
+        } catch (const std::exception& e) {
+            std::cerr << "[!] Binary relay failure: " << e.what() << "\n";
+        }
+    } else {
+        // Fallback for cross-instance binary delivery via hex-encoded JSON wrapper
+        std::string binary_data(static_cast<const char*>(data), length);
+        json::object wrapper;
+        wrapper["type"] = "binary_payload";
+        std::stringstream ss;
+        for (unsigned char c : binary_data) {
+            ss << std::hex << std::setw(2) << std::setfill('0') << (int)c;
+        }
+        wrapper["data_hex"] = ss.str();
+        std::string wrapper_str = json::serialize(wrapper);
+        redis_.publish_message(safe_hash, wrapper_str);
+        redis_.store_offline_message(safe_hash, wrapper_str);
+
+        thread_local std::mt19937 gen{std::random_device{}()};
+        std::uniform_int_distribution<> dis(10, 50);
+        auto ack_timer = std::make_shared<boost::asio::steady_timer>(sender->get_executor());
+        ack_timer->expires_after(std::chrono::milliseconds(dis(gen)));
+
+        json::object response;
+        response["type"] = "delivery_status";
+        response["target"] = safe_hash;
+        response["status"] = "relayed";
+        pad_json(response, REQUIRED_PACKET_SIZE);
+        std::string ack_str = json::serialize(response);
+
+        ack_timer->async_wait([sender, ack_str, ack_timer](const boost::system::error_code& ec) {
+            if (!ec) {
+                sender->send_text(ack_str);
+            }
+        });
+    }
+}
+// Low-overhead relay for ephemeral data. Does not provide ACKs or persistence.
+void MessageRelay::relay_volatile(const std::string& recipient_hash,
+                                  const void* data,
+                                  size_t length) {
+    std::string safe_hash = sanitize_field(recipient_hash, 256);
+    if (safe_hash.empty()) return;
+
+    auto recipient = conn_manager_.get_connection(safe_hash);
+    if (recipient) {
+        try {
+            std::string payload(static_cast<const char*>(data), length);
+            if (payload.size() < REQUIRED_PACKET_SIZE) {
+                payload.resize(REQUIRED_PACKET_SIZE, '\0');
+            }
+            
+            thread_local std::mt19937 gen{std::random_device{}()};
+            std::uniform_int_distribution<> dis(10, 50);
+            
+            auto timer = std::make_shared<boost::asio::steady_timer>(recipient->get_executor());
+            timer->expires_after(std::chrono::milliseconds(dis(gen)));
+            
+            timer->async_wait([recipient, payload, timer](const boost::system::error_code& ec) {
+                if (!ec) {
+                    recipient->send_binary(payload);
+                }
+            });
+        } catch (...) {}
+    } else {
+        std::string binary_data(static_cast<const char*>(data), length);
+        json::object wrapper;
+        wrapper["type"] = "binary_payload";
+        wrapper["volatile"] = true;
+        std::stringstream ss;
+        for (unsigned char c : binary_data) {
+            ss << std::hex << std::setw(2) << std::setfill('0') << (int)c;
+        }
+        wrapper["data_hex"] = ss.str();
+        redis_.publish_message(safe_hash, json::serialize(wrapper));
+    }
+}
+
+// Routes one message to multiple recipients. Optimized for group chats.
+void MessageRelay::relay_multicast(const std::vector<std::string>& recipients,
+                                    const std::string& message_json) {
+    if (!validate_message_size(message_json.size())) {
+        std::cerr << "[!] Multicast message exceeds maximum size limit\n";
+        return;
+    }
+
+    std::string final_json;
+    try {
+        auto json_val = InputValidator::safe_parse_json(message_json);
+        if (!json_val.is_object()) return;
+        auto& obj = json_val.as_object();
+        
+        json::object clean_msg;
+        if (obj.contains("type")) clean_msg["type"] = obj["type"];
+        clean_msg["body"] = obj["body"];
+        if (obj.contains("pow")) clean_msg["pow"] = obj["pow"];
+        
+        final_json = json::serialize(clean_msg);
+        if (final_json.size() < REQUIRED_PACKET_SIZE) {
+            json::object padded_obj = clean_msg;
+            MessageRelay::pad_json(padded_obj, REQUIRED_PACKET_SIZE);
+            final_json = json::serialize(padded_obj);
+        }
+    } catch (...) {
+        return;
+    }
+
+    size_t recipient_count = recipients.size();
+    if (recipient_count > 100) {
+        std::cerr << "[!] Multicast recipients truncated from " << recipient_count << " to 100\n";
+        recipient_count = 100; // Hard limit on fan-out for stability
+    }
+
+    std::vector<std::string> remote_recipients;
+    for (size_t i = 0; i < recipient_count; ++i) {
+        const auto& recipient_hash = recipients[i];
+        if (recipient_hash.empty()) continue;
+        std::string safe_to = sanitize_field(recipient_hash, 256);
+        
+        auto conn = conn_manager_.get_connection(safe_to);
+        if (conn) {
+            try {
+                thread_local std::mt19937 gen{std::random_device{}()};
+                std::uniform_int_distribution<> dis(10, 50);
+                
+                auto timer = std::make_shared<boost::asio::steady_timer>(conn->get_executor());
+                timer->expires_after(std::chrono::milliseconds(dis(gen)));
+                
+                timer->async_wait([conn, final_json, timer](const boost::system::error_code& ec) {
+                    if (!ec) {
+                        conn->send_text(final_json);
+                    }
+                });
+            } catch(...) {}
+        } else {
+            remote_recipients.push_back(safe_to);
+        }
+    }
+
+    if (!remote_recipients.empty()) {
+        redis_.publish_multicast(remote_recipients, final_json);
+        for (const auto& r : remote_recipients) {
+            redis_.store_offline_message(r, final_json);
+        }
+    }
+}
+
+// Complex relay for heterogeneous group payloads.
+void MessageRelay::relay_group_message(const boost::json::array& targets,
+                                      std::shared_ptr<WebSocketSession> sender) {
+    size_t target_count = targets.size();
+    if (target_count > 100) {
+        std::cerr << "[!] Group multicast targets truncated from " << target_count << " to 100\n";
+        target_count = 100;
+    }
+
+    for (size_t i = 0; i < target_count; ++i) {
+        const auto& target_val = targets[i];
+        try {
+            if (!target_val.is_object()) continue;
+            auto& target_obj = target_val.as_object();
+            
+            if (!target_obj.contains("to") || !target_obj.contains("body")) continue;
+            
+            std::string to = std::string(target_obj.at("to").as_string());
+            std::string safe_to = sanitize_field(to, 256);
+            
+            json::object clean_msg;
+            clean_msg["type"] = "sealed_message";
+            clean_msg["body"] = target_obj.at("body");
+            if (target_obj.contains("msg_type")) clean_msg["msg_type"] = target_obj.at("msg_type");
+            
+            std::string final_json = json::serialize(clean_msg);
+            if (final_json.size() < REQUIRED_PACKET_SIZE) {
+                pad_json(clean_msg, REQUIRED_PACKET_SIZE);
+                final_json = json::serialize(clean_msg);
+            }
+
+            auto conn = conn_manager_.get_connection(safe_to);
+            if (conn) {
+                try { conn->send_text(final_json); } catch(...) {}
+            } else {
+                redis_.publish_message(safe_to, final_json);
+                redis_.store_offline_message(safe_to, final_json);
+            }
+        } catch (...) {}
+    }
+}
+
+// Acknowledges heartbeats/dummies with an equally sized response.
+void MessageRelay::handle_dummy(std::shared_ptr<WebSocketSession> sender) {
+    auto ack = std::make_shared<json::object>();
+    (*ack)["type"] = "dummy_ack";
+    (*ack)["timestamp"] = std::time(nullptr);
+    pad_json(*ack, SYSTEM_MSG_PADDING); 
+    
+    thread_local std::mt19937 gen{std::random_device{}()};
+    std::uniform_int_distribution<> dis(10, 50);
+    
+    auto timer = std::make_shared<boost::asio::steady_timer>(sender->get_executor());
+    timer->expires_after(std::chrono::milliseconds(dis(gen)));
+    
+    std::string ack_str = json::serialize(*ack);
+    timer->async_wait([sender, ack_str, timer](const boost::system::error_code& ec) {
+        if (!ec) {
+            sender->send_text(ack_str);
+        }
+    });
+}
+
+// Fetches and drains stored messages from Redis for a newly reconnected user.
+void MessageRelay::deliver_pending(const std::string& recipient_hash,
+                                   std::shared_ptr<WebSocketSession> recipient) {
+    auto raw_messages = redis_.retrieve_offline_messages(recipient_hash);
+    if (raw_messages.empty()) return;
+    
+    int64_t mock_id = 1; 
+    for (const auto& msg_json : raw_messages) {
+        try {
+            json::object wrapper;
+            wrapper["type"] = "queued_message";
+            wrapper["id"] = mock_id++; 
+            try {
+                wrapper["payload"] = InputValidator::safe_parse_json(msg_json);
+            } catch(...) {
+                wrapper["payload"] = msg_json; 
+            }
+            
+            std::string final_payload = json::serialize(wrapper);
+            
+            auto timer = std::make_shared<boost::asio::steady_timer>(recipient->get_executor());
+            
+            thread_local std::mt19937 gen{std::random_device{}()};
+            std::uniform_int_distribution<> dis(10, 80); 
+            timer->expires_after(std::chrono::milliseconds(dis(gen)));
+            
+            timer->async_wait([recipient, final_payload, timer](const boost::system::error_code& ec) {
+                if (!ec) {
+                    recipient->send_text(final_payload);
+                }
+            });
+        } catch (const std::exception& e) {
+            std::cerr << "[!] Failed to deliver pending message: " << e.what() << "\n";
+        }
+    }
+}
+
+}

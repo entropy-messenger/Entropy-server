@@ -1,0 +1,16 @@
+if(TARGET hiredis)
+    set(Hiredis_FOUND TRUE)
+    set(HIREDIS_FOUND TRUE)
+    set(Hiredis_INCLUDE_DIRS ${hiredis_SOURCE_DIR})
+    set(HIREDIS_INCLUDE_DIRS ${hiredis_SOURCE_DIR})
+    set(Hiredis_LIBRARIES hiredis)
+    set(HIREDIS_LIBRARIES hiredis)
+    
+    if(NOT TARGET Hiredis::Hiredis)
+        add_library(Hiredis::Hiredis ALIAS hiredis)
+    endif()
+    
+    message(STATUS "Using fetched hiredis from ${hiredis_SOURCE_DIR}")
+else()
+    message(FATAL_ERROR "FindHiredis module used but hiredis target not defined!")
+endif()

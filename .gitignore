@@ -1,0 +1,60 @@
+# CMake build directory
+build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+Makefile
+cmake_install.cmake
+_deps/hiredis-src
+
+# IDE settings
+.vscode/
+.idea/
+.vs/
+
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+server
+*.exe
+*.out
+*.app
+
+# Generated Certificates
+certs/
+
+# Clangd
+.cache/
+compile_commands.json
+
+# Redis dump
+dump.rdb
+_deps/
+
+# Secrets and Environment
+.env
+.env.local
+.env.*.local
+
+# Dynamic Data
+data/
+logs/
+
+# OS files
+.DS_Store
+Thumbs.db
