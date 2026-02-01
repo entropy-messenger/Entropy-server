@@ -2,7 +2,6 @@
 
 [![Status](https://img.shields.io/badge/status-active-green?style=for-the-badge&logo=statuspage)](https://github.com/Moyzy/entropy)
 [![License](https://img.shields.io/badge/license-AGPLv3-blue?style=for-the-badge&logo=gnu)](./LICENSE)
-[![Protocol](https://img.shields.io/badge/Architecture-Distributed-orange?style=for-the-badge)](./SPECS.md)
 
 **Entropy Server** is a high-performance, stateless relay designed for sovereign messaging. It functions as a "Zero-Knowledge" backbone, ensuring that metadata is never stored and routing remains blinded to the network operator.
 
