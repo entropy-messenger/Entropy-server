@@ -19,8 +19,6 @@ def verify_forensic_burn(user_hash, salt):
         if r.exists(key):
             found.append(key)
             
-    # Also check generic nick mapping (if we knew the nick)
-    # But checking everything matching the blinded ID is the core mandate.
     
     if found:
         print(f"[-] FORENSIC FAIL: Residual data found: {found}")
