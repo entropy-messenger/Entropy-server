@@ -30,7 +30,7 @@ RedisManager::RedisManager(const ServerConfig& config, ConnectionManager& conn_m
         running_ = true;
         subscriber_thread_ = std::thread(&RedisManager::subscriber_loop, this);
         
-        std::cout << "[*] Redis connected: " << config.redis_url << "\n";
+        std::cout << "[*] Redis connected: " << config.redis_url << std::endl;
     } catch (const std::exception& e) {
         std::cerr << "[!] Redis connection failed: " << e.what() << "\n";
         connected_ = false;
