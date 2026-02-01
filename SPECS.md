@@ -1,4 +1,4 @@
-# ⚙️ Entropy Server Architectural Specification
+# Entropy Server Architectural Specification
 
 The Entropy Relay is a C++23, high-concurrency node designed with a **Zero-Knowledge** and **Stateless** philosophy.
 
@@ -16,27 +16,27 @@ The server never learns the mapping between a WebSocket connection and a real-wo
 - Clients communicate using **Identity Hashes** (SHA256 of their public key).
 - In a **Sealed Sender** flow, the server cannot see who the sender is; it only sees the intended recipient's hash to facilitate routing.
 
-## 4. Traffic Normalization (Anti-Analysis)
+## 3. Traffic Normalization (Anti-Analysis)
 
 To prevent metadata leakage through packet sizes and timing patterns, the server implements aggressive traffic normalization:
 
-### 4.1 Packet Padding
+### 3.1 Packet Padding
 - **Fixed Size**: All JSON responses are padded to exactly **1536 bytes** using random whitespace
 - **Binary Normalization**: Binary WebSocket messages are zero-padded to the same size threshold
 - **Purpose**: Prevents observers from distinguishing message types or inferring content based on size
 
-### 4.2 Timing Jitter
+### 3.2 Timing Jitter
 - **Random Delays**: Every message delivery includes a random **10-50ms delay** before transmission
 - **Prevents Correlation**: Makes it harder to correlate incoming and outgoing messages at network boundaries
 - **Implementation**: Uses `Boost.Asio` steady timers with per-message randomization
 
-### 4.3 Dummy Traffic (Pacing)
+### 3.3 Dummy Traffic (Pacing)
 - **Automatic Background Packets**: WebSocket sessions send `dummy_pacing` JSON packets every **500ms** during idle periods
 - **Idle Threshold**: Dummy traffic only triggers if the session has been idle for less than **5 seconds**
 - **Constant Profile**: Maintains a steady traffic rate to mask when real messages are being sent/received
 - **Response**: Server replies with equally-sized `dummy_ack` packets
 
-### 4.4 Implementation Details
+### 3.4 Implementation Details
 ```cpp
 // From message_relay.cpp
 static const size_t REQUIRED_PACKET_SIZE = 1536;
@@ -49,9 +49,9 @@ timer->expires_after(std::chrono::milliseconds(dis(gen)));
 
 ---
 
-## 5. Forensic Burn
+## 4. Forensic Burn
 
-The server supports a true "Nuclear Option."
+The server supports a comprehensive data destruction capability:
 - Upon a validated `burn` request, the server executes a Lua script on the Redis cluster.
 - This script atomically deletes every trace of the identity:
   1. Key bundles.
@@ -59,20 +59,20 @@ The server supports a true "Nuclear Option."
   3. Active session state.
   4. Rate limit counters.
 
-## 6. Zero Persistence
+## 5. Zero Persistence
 
 By design, the Entropy Server does not use a persistent disk database for user data.
 - **Volatile Storage**: All ephemeral state is stored in RAM (via Redis).
 - **TTL Enforcement**: Key bundles and offline messages have a strict TTL (e.g., 30 days). If a user doesn't check in, their data is naturally recycled.
 - **Log Blinding**: IP addresses in logs are SHA-256 hashed with a rotating daily salt to ensure forward secrecy for connection metadata.
 
-## 7. Network Stack
+## 6. Network Stack
 
 - **I/O Engine**: `Boost.Asio` with a multi-threaded `io_context` pool.
 - **Encryption**: TLS 1.3 is enforced for all traffic.
 - **Memory Safety**: Uses C++ shared pointers and RAII to ensure zero leaks in high-uptime environments.
 
-## 8. REST API Endpoints
+## 7. REST API Endpoints
 
 The server exposes HTTP endpoints for identity and key management:
 
@@ -84,7 +84,7 @@ The server exposes HTTP endpoints for identity and key management:
 - **`GET /nickname/lookup?nick=<name>`**: Resolves a nickname to its identity hash
 - **`POST /account/burn`**: Permanently deletes all server-side data for an identity (requires Ed25519 signature)
 
-## 9. WebSocket Message Protocol
+## 8. WebSocket Message Protocol
 
 Once authenticated, clients maintain a persistent WebSocket connection for real-time messaging:
 
@@ -99,7 +99,7 @@ Once authenticated, clients maintain a persistent WebSocket connection for real-
 - **`queued_message`**: Offline message being delivered from storage
 - **`dummy_ack`**: Response to keepalive pings
 
-## 10. Cross-Instance Routing (Redis Pub/Sub)
+## 9. Cross-Instance Routing (Redis Pub/Sub)
 
 Multiple server instances coordinate via Redis:
 

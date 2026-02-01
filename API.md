@@ -1,4 +1,4 @@
-# 🌐 Entropy Server API Reference
+# Entropy Server API Reference
 
 The Entropy Server provides a high-performance, stateless relay for decentralized messaging. It uses a combination of REST for setup and WebSockets for real-time delivery.
 

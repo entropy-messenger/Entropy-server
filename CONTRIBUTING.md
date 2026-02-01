@@ -22,7 +22,7 @@ By participating in this project, you agree to abide by our standards of profess
 2.  If you've added code that should be tested, add tests.
 3.  If you've changed APIs, update the documentation.
 4.  Ensure the test suite passes (`./run_all_tests.sh`).
-5.  Make sure your code follows the existing style (Modern C++23 standards, clear naming, no "AI-style" redundant comments).
+5.  Make sure your code follows the existing style (Modern C++23 standards, clear naming, no redundant comments).
 
 ## Technical Standards
 

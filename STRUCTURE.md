@@ -1,4 +1,4 @@
-# 📂 Server Project Structure
+# Server Project Structure
 
 Summary of the Entropy Relay Server codebase organization.
 
@@ -31,7 +31,7 @@ Summary of the Entropy Relay Server codebase organization.
 └── API.md                   # Endpoint documentation
 ```
 
-## 🏗️ Execution Flow
+## Execution Flow
 
 1.  **Listener**: Accepts raw TCP connections and performs the TLS handshake.
 2.  **HTTP Session**: Detects if the request is a REST call or a WebSocket upgrade.
