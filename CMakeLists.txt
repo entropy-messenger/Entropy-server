@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.14)
 project(entropy_backend VERSION 2.0 LANGUAGES CXX C)
+enable_testing()
 
 if(POLICY CMP0167)
     cmake_policy(SET CMP0167 OLD)
