@@ -37,10 +37,10 @@ public:
         const ServerConfig& config,
         ConnectionManager& conn_manager,
         MessageRelay& relay,
-
         RateLimiter& rate_limiter,
         KeyStorage& key_storage,
-        RedisManager& redis
+        RedisManager& redis,
+        std::shared_ptr<void> conn_guard
     );
     
     
@@ -51,7 +51,8 @@ public:
         MessageRelay& relay,
         RateLimiter& rate_limiter,
         KeyStorage& key_storage,
-        RedisManager& redis
+        RedisManager& redis,
+        std::shared_ptr<void> conn_guard
     );
     
     ~HttpSession() = default;
@@ -82,6 +83,7 @@ private:
     IdentityHandler identity_handler_;
     
     std::string remote_addr_;
+    std::shared_ptr<void> conn_guard_;
     
     void on_handshake(beast::error_code ec);
     void do_read();

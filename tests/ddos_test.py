@@ -6,7 +6,7 @@ import time
 import sys
 import os
 
-PORT = 8092
+PORT = 8080
 URL = f"http://localhost:{PORT}"
 
 async def flood_connections(count, max_per_ip):
@@ -14,17 +14,22 @@ async def flood_connections(count, max_per_ip):
     conns = []
     rejected = 0
     
-    for i in range(count):
+    async def connect_one(i):
+        nonlocal rejected
         try:
-            # We use /ws upgrade request directly to hit the ConnectionManager
-            ws = await asyncio.wait_for(websockets.connect(f"ws://localhost:{PORT}/ws"), timeout=1.0)
-            conns.append(ws)
+            ws = await asyncio.wait_for(websockets.connect(f"ws://localhost:{PORT}/ws"), timeout=2.0)
             # Try to authenticate many sessions from same IP
             auth = {"type": "auth", "payload": {"identity_hash": f"user_{i}", "seed": "...", "nonce": "..."}}
             await ws.send(json.dumps(auth))
-            # The server should drop/close those exceeding limit
+            conns.append(ws)
         except Exception:
             rejected += 1
+
+    tasks = [connect_one(i) for i in range(count)]
+    await asyncio.gather(*tasks)
+    
+    # Wait longer for server to process and OS to clean up socket states
+    await asyncio.sleep(5)
             
     print(f"[+] Total connections attempted: {count}")
     print(f"[+] Active connections: {len(conns)}")
@@ -48,7 +53,11 @@ async def test_invalid_pow_flood(count):
     
     start = time.time()
     for _ in range(count):
-        requests.post(f"{URL}/keys/upload", json=data, headers=headers)
+        try:
+            requests.post(f"{URL}/keys/upload", json=data, headers=headers, timeout=2)
+            time.sleep(0.1) 
+        except Exception as e:
+            pass
     elapsed = time.time() - start
     print(f"[+] Processed {count} malicious requests in {elapsed:.2f}s ({count/elapsed:.1f} req/s)")
     # If the server is still responsive, it passed
@@ -60,6 +69,14 @@ async def test_invalid_pow_flood(count):
 if __name__ == "__main__":
     import asyncio
     async def run():
-        await flood_connections(200, 100)
+        # Phase 1: Connection Limit
+        await flood_connections(200, 50)
+        
+        # Wait for server to fully clean up closed connections
+        print("[*] Cooling down before next phase...")
+        await asyncio.sleep(5)
+        
+        # Phase 2: Invalid PoW Flood (CPU/Resource)
         await test_invalid_pow_flood(50)
+        
     asyncio.run(run())

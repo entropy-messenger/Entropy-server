@@ -113,43 +113,61 @@ private:
         if (ec) {
             std::cerr << "[!] Accept error: " << ec.message() << "\n";
         } else {
-            std::cout << "[*] New connection from " << socket.remote_endpoint() << "\n";
+            std::string remote_ip;
+            try {
+                remote_ip = socket.remote_endpoint().address().to_string();
+            } catch (...) {
+                remote_ip = "unknown";
+            }
+
+            std::cout << "[*] New connection from " << remote_ip << "\n";
             
             if (conn_manager_.connection_count() >= config_.max_global_connections) {
                 SecurityLogger::log(SecurityLogger::Level::WARNING, SecurityLogger::EventType::CONNECTION_REJECTED,
-                                  socket.remote_endpoint().address().to_string(), "Global connection limit reached");
+                                  remote_ip, "Global connection limit reached");
                 MetricsRegistry::instance().increment_counter("global_limit_rejected");
-                return; 
-            }
-
-            if (config_.enable_tls) {
-                auto stream = beast::ssl_stream<beast::tcp_stream>(
-                    beast::tcp_stream(std::move(socket)),
-                    ssl_ctx_
-                );
-                
-                std::make_shared<HttpSession>(
-                    std::move(stream),
-                    config_,
-                    conn_manager_,
-                    relay_,
-                    rate_limiter_,
-                    key_storage_,
-                    redis_
-                )->run();
+            } else if (!conn_manager_.increment_ip_count(remote_ip, config_.max_connections_per_ip)) {
+                // Enforce per-IP connection limit BEFORE creating session
+                SecurityLogger::log(SecurityLogger::Level::WARNING, SecurityLogger::EventType::RATE_LIMIT_HIT,
+                                  remote_ip, "Per-IP total connection limit reached");
+                MetricsRegistry::instance().increment_counter("ip_limit_rejected");
+                // Socket will be closed when it goes out of scope here
             } else {
-                std::make_shared<HttpSession>(
-                    beast::tcp_stream(std::move(socket)),
-                    config_,
-                    conn_manager_,
-                    relay_,
-                    rate_limiter_,
-                    key_storage_,
-                    redis_
-                )->run();
+                // Create a guard to decrement the IP count when the session tree is destroyed
+                auto guard = std::shared_ptr<void>(nullptr, [self_ref = shared_from_this(), remote_ip](void*){
+                    self_ref->conn_manager_.decrement_ip_count(remote_ip);
+                });
+
+                if (config_.enable_tls) {
+                    auto stream = beast::ssl_stream<beast::tcp_stream>(
+                        beast::tcp_stream(std::move(socket)),
+                        ssl_ctx_
+                    );
+                    
+                    std::make_shared<HttpSession>(
+                        std::move(stream),
+                        config_,
+                        conn_manager_,
+                        relay_,
+                        rate_limiter_,
+                        key_storage_,
+                        redis_,
+                        guard
+                    )->run();
+                } else {
+                    std::make_shared<HttpSession>(
+                        beast::tcp_stream(std::move(socket)),
+                        config_,
+                        conn_manager_,
+                        relay_,
+                        rate_limiter_,
+                        key_storage_,
+                        redis_,
+                        guard
+                    )->run();
+                }
             }
         }
-        
         
         do_accept();
     }
@@ -265,8 +283,8 @@ int main(int argc, char* argv[]) {
         if (const char* e = std::getenv("ENTROPY_LIMIT_ACCOUNT_BURN")) config.account_burn_limit = std::stoi(e);
         
         if (config.allowed_origins.empty()) {
-            std::cerr << "[!] WARNING: No CORS origins configured. Set ENTROPY_ALLOWED_ORIGINS environment variable.\n";
-            std::cerr << "[!] Example: ENTROPY_ALLOWED_ORIGINS=https://example.com,https://app.example.com\n";
+            std::cerr << "[!] WARNING: No CORS origins configured. Set ENTROPY_ALLOWED_ORIGINS environment variable." << std::endl;
+            std::cerr << "[!] Example: ENTROPY_ALLOWED_ORIGINS=https://example.com,https://app.example.com" << std::endl;
         }
         
         static const std::string DEFAULT_SALT = "CHANGE_ME_IN_PRODUCTION_VIA_ENV_OR_LOGS_WILL_BE_INSECURE";
@@ -283,7 +301,14 @@ int main(int argc, char* argv[]) {
         }
         
         
-        std::filesystem::path exe_path = std::filesystem::canonical("/proc/self/exe").parent_path();
+        std::cout << "[*] Detecting executable path..." << std::endl;
+        std::filesystem::path exe_path;
+        try {
+            exe_path = std::filesystem::canonical("/proc/self/exe").parent_path();
+        } catch (const std::exception& e) {
+            std::cerr << "[!] Warning: Could not detect executable path via /proc/self/exe: " << e.what() << std::endl;
+            exe_path = std::filesystem::current_path();
+        }
         
         if (config.enable_tls) {
             if (config.cert_path.rfind("certs/", 0) == 0) {
@@ -305,28 +330,25 @@ int main(int argc, char* argv[]) {
         
         
         std::cout << R"(
-╔══════════════════════════════════════════════════════════════╗
-║              ENTROPY SECURE MESSAGING SERVER v2.0            ║
-║                                                              ║
-║                                                              ║
-)" << (config.enable_tls ? "║  ✓ TLS 1.2+/1.3 encrypted transport                          ║\n" 
-                         : "║  ⚠ TLS DISABLED (development mode)                           ║\n")
-   << "╚══════════════════════════════════════════════════════════════╝\n";
+ENTROPY SECURE MESSAGING SERVER v2.0            
+)" << (config.enable_tls ? "  ✓ TLS 1.2+/1.3 encrypted transport                          \n" 
+                         : "  ⚠ TLS DISABLED (development mode)                           \n")
+   << "\n";
         
         
         net::io_context ioc{config.thread_count};
         
         
+        std::cout << "[*] Initializing SSL context..." << std::endl;
         ssl::context ssl_ctx{ssl::context::tlsv12};
         if (config.enable_tls) {
             load_server_certificate(ssl_ctx, config.cert_path, config.key_path);
         }
         
-        
         entropy::ConnectionManager conn_manager(config.secret_salt);
         
+        std::cout << "[*] Initializing Redis..." << std::endl;
         entropy::RedisManager redis(config, conn_manager, config.secret_salt); 
-        
         
         entropy::RateLimiter rate_limiter(redis);
         entropy::MessageRelay relay(conn_manager, redis, rate_limiter);
@@ -347,7 +369,6 @@ int main(int argc, char* argv[]) {
     // Flag to track server running state
         std::atomic<bool> running{true};
         
-        // Initialize the connection listener
         auto listener = std::make_shared<entropy::Listener>(
             ioc,
             ssl_ctx,

@@ -5,6 +5,7 @@ using namespace entropy;
 
 TEST(MetricsTest, Counter) {
     auto& reg = MetricsRegistry::instance();
+    reg.reset();
     
     
     reg.increment_counter("test_counter", 1.0);
@@ -17,6 +18,7 @@ TEST(MetricsTest, Counter) {
 
 TEST(MetricsTest, Gauge) {
     auto& reg = MetricsRegistry::instance();
+    reg.reset();
     reg.set_gauge("test_gauge", 42.0);
     EXPECT_EQ(reg.get_gauge("test_gauge"), 42.0);
     

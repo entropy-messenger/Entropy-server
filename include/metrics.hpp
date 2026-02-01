@@ -50,6 +50,13 @@ public:
         return (it != gauges_.end()) ? it->second : 0.0;
     }
 
+    // Reset all metrics (mainly for testing).
+    void reset() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        counters_.clear();
+        gauges_.clear();
+    }
+
     /**
      * Serializes all recorded metrics into Prometheus exposition format (text version 0.0.4).
      */

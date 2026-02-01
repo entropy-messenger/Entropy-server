@@ -33,8 +33,8 @@ include(FetchContent)
 # Hiredis configuration
 set(DISABLE_TESTS ON CACHE BOOL "" FORCE)
 set(ENABLE_EXAMPLES OFF CACHE BOOL "" FORCE)
-# Global testing disable
-set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+# Testing configuration
+option(BUILD_TESTING "Build the testing suite" ON)
 
 FetchContent_Declare(
     hiredis
@@ -135,3 +135,7 @@ add_custom_target(generate_certs
     COMMENT "Generating self-signed certificates for development..."
     VERBATIM
 )
+
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()

@@ -504,4 +504,13 @@ std::string RedisManager::blind(const std::string& input) {
     return ss.str();
 }
 
+bool RedisManager::delete_key(const std::string& key) {
+    if (!connected_) return false;
+    try {
+        return redis_->del(key) > 0;
+    } catch (...) {
+        return false;
+    }
+}
+
 }

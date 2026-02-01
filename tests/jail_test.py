@@ -3,7 +3,7 @@ import time
 import sys
 
 # Configuration
-PORT = 8092
+PORT = 8080
 URL = f"http://localhost:{PORT}"
 
 def test_rate_limit_jailing():
@@ -17,11 +17,13 @@ def test_rate_limit_jailing():
         try:
             r = requests.get(f"{URL}/pow/challenge", timeout=2)
             if r.status_code == 429:
-                print(f"[+] Hit Rate Limit at attempt {i}")
-            if r.status_code == 403:
-                print(f"[!] BANNED / JAILED at attempt {i}")
-                jail_triggered = True
-                break
+                retry_after = int(r.headers.get('Retry-After', 0))
+                if retry_after >= 300:
+                    print(f"[!] BANNED / JAILED (Status 429, Retry-After: {retry_after}) at attempt {i}")
+                    jail_triggered = True
+                    break
+                else:
+                    print(f"[+] Hit Rate Limit at attempt {i}")
         except requests.exceptions.RequestException:
             # Server might have dropped connection
             print("[!] Connection Refused - Potential Firewall/Jail action")

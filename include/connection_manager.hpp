@@ -42,6 +42,9 @@ public:
     
     void cleanup_dead_connections();
     void close_all_connections();
+
+    bool increment_ip_count(const std::string& ip, size_t limit);
+    void decrement_ip_count(const std::string& ip);
     
     std::string blind_id(const std::string& id) const;
 

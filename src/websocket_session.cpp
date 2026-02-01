@@ -276,6 +276,10 @@ void WebSocketSession::on_write(beast::error_code ec, std::size_t  ) {
 }
 
 void WebSocketSession::close() {
+    if (pacing_timer_) {
+        beast::error_code ec;
+        pacing_timer_->cancel(ec);
+    }
     do_close();
 }
 
@@ -317,12 +321,16 @@ void WebSocketSession::start_pacing() {
 
 // Sends dummy packets at regular intervals if no real activity is detected.
 void WebSocketSession::tick_pacing() {
+    if (close_triggered_) return;
+    
     auto self = shared_from_this();
     pacing_timer_->expires_after(std::chrono::milliseconds(ServerConfig::Pacing::tick_interval_ms));
     pacing_timer_->async_wait([self, this](beast::error_code ec) {
-        if (ec) return;
+        if (ec || close_triggered_) return;
         
         net::post(get_executor(), [self, this]() {
+            if (close_triggered_) return;
+            
             if (write_queue_.empty()) {
                 
                 auto now = std::chrono::steady_clock::now();

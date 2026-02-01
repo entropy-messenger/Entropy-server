@@ -7,7 +7,7 @@ import time
 import sys
 
 # Configuration
-PORT = 8092
+PORT = 8080
 BASE_URL = f"http://localhost:{PORT}"
 WS_URL = f"ws://localhost:{PORT}/ws"
 
@@ -30,7 +30,15 @@ async def test_alias_exhaustion():
     async with websockets.connect(WS_URL) as ws:
         # Auth Alice
         r = requests.get(f"{BASE_URL}/pow/challenge")
+        if r.status_code != 200:
+            print(f"[-] FAILED to get challenge: {r.status_code} {r.text}")
+            return False
+            
         challenge = r.json()
+        if "seed" not in challenge:
+            print(f"[-] FAILED: Challenge missing seed: {challenge}")
+            return False
+            
         identity_hash = hashlib.sha256(b"alias_alice").hexdigest()
         nonce = solve_pow(challenge["seed"], challenge["difficulty"], identity_hash)
         
@@ -46,7 +54,15 @@ async def test_alias_exhaustion():
             alias = f"alias_{i}"
             # Need PoW for each alias to be realistic
             r_alias = requests.get(f"{BASE_URL}/pow/challenge")
+            if r_alias.status_code != 200:
+                print(f"[-] FAILED to get alias challenge at {i}: {r_alias.status_code} {r_alias.text}")
+                return False
+                
             chal_alias = r_alias.json()
+            if "seed" not in chal_alias:
+                print(f"[-] FAILED: chal_alias missing seed at {i}: {chal_alias}")
+                return False
+                
             nonce_alias = solve_pow(chal_alias["seed"], chal_alias["difficulty"], alias)
             
             await ws.send(json.dumps({
@@ -73,8 +89,12 @@ async def test_alias_exhaustion():
             "type": "subscribe_alias",
             "payload": {"alias": alias_51, "seed": r_51.json()["seed"], "nonce": nonce_51}
         }))
-        resp = await ws.recv()
-        data = json.loads(resp)
+        while True:
+            resp = await ws.recv()
+            data = json.loads(resp)
+            if data.get("type") == "dummy_pacing": continue
+            break
+            
         if data.get("type") == "error" and "limit reached" in data.get("message", "").lower():
             print("[!] Alias Limit Enforcement VERIFIED")
             return True

@@ -10,7 +10,7 @@ using namespace entropy;
 class RedisManagerTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        config.redis_url = "tcp://127.0.0.1:6379?read_timeout=100ms";
+        config.redis_url = "tcp://127.0.0.1:6379?socket_timeout=100ms";
         cm = std::make_unique<ConnectionManager>("test_salt");
         redis = std::make_unique<RedisManager>(config, *cm, "test_salt");
         
@@ -96,6 +96,9 @@ TEST_F(RedisManagerTest, LuaRateLimiter) {
     if (!redis->is_connected()) GTEST_SKIP();
 
     std::string key = "rl_test_user";
+    redis->delete_key(key);
+    redis->delete_key(key + ":viol");
+    redis->delete_key(key + ":jail");
     int limit = 2;
     int window = 10;
     

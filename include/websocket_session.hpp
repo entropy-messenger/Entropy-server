@@ -76,6 +76,7 @@ public:
      
     void set_message_handler(MessageHandler handler) { on_message_ = std::move(handler); }
     void set_close_handler(CloseHandler handler) { on_close_ = std::move(handler); }
+    void set_conn_guard(std::shared_ptr<void> guard) { conn_guard_ = std::move(guard); }
     
      
     void set_user_data(const std::string& data) { user_data_ = data; }
@@ -138,6 +139,7 @@ private:
     
     MessageHandler on_message_;
     CloseHandler on_close_;
+    std::shared_ptr<void> conn_guard_;
     
     void do_read();
     void on_read(beast::error_code ec, std::size_t bytes_transferred);

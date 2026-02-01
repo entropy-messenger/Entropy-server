@@ -13,7 +13,7 @@ using namespace entropy;
 
 TEST(RateLimiterTest, Initialization) {
     ServerConfig config;
-    config.redis_url = "tcp://127.0.0.1:6379"; 
+    config.redis_url = "tcp://127.0.0.1:6379?socket_timeout=100ms"; 
     ConnectionManager cm("salt");
     RedisManager redis(config, cm, "salt");
     

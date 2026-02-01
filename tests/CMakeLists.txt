@@ -1,65 +1,20 @@
-cmake_minimum_required(VERSION 3.14)
-project(entropy_tests)
+# Google Test is required for unit tests
+if(NOT TARGET gtest)
+    include(FetchContent)
+    FetchContent_Declare(
+      googletest
+      GIT_REPOSITORY https://github.com/google/googletest.git
+      GIT_TAG        v1.14.0
+      GIT_SHALLOW    TRUE
+    )
+    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(googletest)
+endif()
 
-set(CMAKE_CXX_STANDARD 23)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
-include(FetchContent)
-FetchContent_Declare(
-  googletest
-  GIT_REPOSITORY https://github.com/google/googletest.git
-  GIT_TAG        v1.14.0
-  GIT_SHALLOW    TRUE
-)
-set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(googletest)
-
-# Identify the server include directory
 set(SERVER_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../include)
 set(SERVER_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 
-# Libraries needed (same as server)
-find_package(Boost REQUIRED COMPONENTS system thread json)
-find_package(OpenSSL REQUIRED)
-find_package(Threads REQUIRED)
-
-# Hiredis and redis++ configuration
-set(DISABLE_TESTS ON CACHE BOOL "" FORCE)
-set(ENABLE_EXAMPLES OFF CACHE BOOL "" FORCE)
-set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
-
-FetchContent_Declare(
-    hiredis
-    GIT_REPOSITORY https://github.com/redis/hiredis.git
-    GIT_TAG        v1.2.0
-    GIT_SHALLOW    TRUE
-)
-FetchContent_MakeAvailable(hiredis)
-
-file(MAKE_DIRECTORY "${hiredis_SOURCE_DIR}/hiredis")
-file(GLOB HIREDIS_HEADERS "${hiredis_SOURCE_DIR}/*.h")
-file(COPY ${HIREDIS_HEADERS} DESTINATION "${hiredis_SOURCE_DIR}/hiredis")
-
-set(HIREDIS_HEADER "${hiredis_SOURCE_DIR}")
-set(HIREDIS_JSY_HEADER "${hiredis_SOURCE_DIR}")
-set(HIREDIS_LIB hiredis CACHE STRING "Hiredis target" FORCE)
-set(HIREDIS_STATIC_LIB hiredis CACHE STRING "Hiredis target" FORCE)
-
-set(REDIS_PLUS_PLUS_BUILD_TEST OFF CACHE BOOL "" FORCE)
-set(REDIS_PLUS_PLUS_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-FetchContent_Declare(
-    redis-plus-plus
-    GIT_REPOSITORY https://github.com/sewenew/redis-plus-plus.git
-    GIT_TAG        master
-    GIT_SHALLOW    TRUE
-)
-FetchContent_MakeAvailable(redis-plus-plus)
-
 enable_testing()
-
-# We need to link against the same objects as the server, but without main.cpp
-# Since we can't easily change the server target to a library without modifying source code,
-# we will just compile the necessary source files directly into the test executable or a test lib.
 
 set(SERVER_LIB_SOURCES
     ${SERVER_SRC_DIR}/http_session.cpp

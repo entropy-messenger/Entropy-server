@@ -9,6 +9,16 @@ on:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     steps:
     - uses: actions/checkout@v4
@@ -24,7 +34,10 @@ jobs:
           libboost-thread-dev \
           libboost-json-dev \
           gcc-13 \
-          g++-13
+          g++-13 \
+          python3-websockets \
+          python3-requests \
+          redis-tools
 
     - name: Configure CMake
       run: |
@@ -43,3 +56,8 @@ jobs:
       run: |
         cd build
         ctest --output-on-failure
+
+    - name: Run Python E2E Tests
+      run: |
+        chmod +x tests/run_e2e_all.sh
+        ./tests/run_e2e_all.sh

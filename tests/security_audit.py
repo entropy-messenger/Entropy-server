@@ -9,7 +9,7 @@ import random
 import requests
 
 # Configuration
-PORT = 8092 
+PORT = 8080 
 BASE_URL = f"http://localhost:{PORT}"
 WS_URL = f"ws://localhost:{PORT}/ws"
 NUM_CLIENTS = 4 

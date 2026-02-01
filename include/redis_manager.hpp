@@ -94,6 +94,9 @@ public:
     // Permanently purges all data associated with an identity.
     bool burn_account(const std::string& user_hash);
 
+    // Deletes a specific key (mainly for testing/internal cleanup).
+    bool delete_key(const std::string& key);
+
 private:
     std::unique_ptr<sw::redis::Redis> redis_;
     std::unique_ptr<sw::redis::Subscriber> subscriber_;

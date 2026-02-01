@@ -22,5 +22,5 @@ services:
     container_name: entropy-redis
     restart: always
     command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
-    expose:
-      - "6379"
+    ports:
+      - "6379:6379"

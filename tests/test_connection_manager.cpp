@@ -8,10 +8,6 @@
 using namespace entropy;
 
 
-
-
-
-
 class ConnectionManagerTest : public ::testing::Test {
 protected:
     ConnectionManager cm{"test_salt"};

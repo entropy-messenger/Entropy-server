@@ -85,12 +85,11 @@ bool ConnectionManager::add_connection_with_limit(const std::string& pub_key_has
                                                    size_t max_per_ip) {
     std::unique_lock lock(connections_mutex_);
     
-    // Check if session is already counted toward the IP limit (e.g., reconnect/handshake)
-    bool already_authenticated = session->is_authenticated();
-    
     std::string b_ip = blind_id(ip_address);
-    size_t& count = ip_counts_[b_ip];
-    if (!already_authenticated && count >= max_per_ip) {
+    size_t count = ip_counts_[b_ip];
+    
+    // Check against max_per_ip (this is a secondary check, primary is in on_accept)
+    if (count > max_per_ip) {
         MetricsRegistry::instance().increment_counter("connection_rejected_limit_total");
         return false;
     }
@@ -98,8 +97,7 @@ bool ConnectionManager::add_connection_with_limit(const std::string& pub_key_has
     std::string blinded = blind_id(pub_key_hash);
     connections_[blinded] = session;
     
-    if (!already_authenticated) {
-        count++;
+    if (!session->is_authenticated()) {
         session->set_authenticated(true);
         MetricsRegistry::instance().increment_gauge("active_connections");
     }
@@ -151,18 +149,10 @@ void ConnectionManager::remove_session(WebSocketSession* session) {
     // Update global and per-IP connection counters
     if (session->is_authenticated()) {
         MetricsRegistry::instance().decrement_gauge("active_connections");
-        
-        auto ip_it = ip_counts_.find(b_ip);
-        if (ip_it != ip_counts_.end()) {
-            if (ip_it->second > 0) {
-                ip_it->second--;
-            }
-            if (ip_it->second == 0) {
-                ip_counts_.erase(ip_it);
-            }
-        }
         session->set_authenticated(false);
     }
+    
+    // Note: per-IP count decrement is handled by ConnectionGuard in lifecycle
 }
 
 // Returns a direct reference to a session given a public key hash.
@@ -247,6 +237,25 @@ std::string ConnectionManager::blind_id(const std::string& id) const {
         ss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
     }
     return ss.str();
+}
+
+bool ConnectionManager::increment_ip_count(const std::string& ip, size_t limit) {
+    std::unique_lock lock(connections_mutex_);
+    std::string b_ip = blind_id(ip);
+    size_t& count = ip_counts_[b_ip];
+    if (count >= limit) return false;
+    count++;
+    return true;
+}
+
+void ConnectionManager::decrement_ip_count(const std::string& ip) {
+    std::unique_lock lock(connections_mutex_);
+    std::string b_ip = blind_id(ip);
+    auto it = ip_counts_.find(b_ip);
+    if (it != ip_counts_.end()) {
+        if (it->second > 0) it->second--;
+        if (it->second == 0) ip_counts_.erase(it);
+    }
 }
 
 }

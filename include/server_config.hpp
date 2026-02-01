@@ -12,7 +12,7 @@ struct ServerConfig {
     // Network
     std::string address = "0.0.0.0";
     uint16_t port = 8080;
-    std::string redis_url = "tcp://127.0.0.1:6379";
+    std::string redis_url = "tcp://127.0.0.1:6379?socket_timeout=1s";
     std::string redis_password = "";
     std::string redis_username = "";
     int thread_count = 0;

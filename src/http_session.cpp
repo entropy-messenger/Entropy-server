@@ -70,7 +70,8 @@ HttpSession::HttpSession(
     MessageRelay& relay,
     RateLimiter& rate_limiter,
     KeyStorage& key_storage,
-    RedisManager& redis
+    RedisManager& redis,
+    std::shared_ptr<void> conn_guard
 )
     : stream_(std::move(stream))
     , is_tls_(true)
@@ -82,6 +83,7 @@ HttpSession::HttpSession(
     , redis_(redis)
     , health_handler_(config, conn_manager)
     , identity_handler_(config, key_storage, redis, rate_limiter)
+    , conn_guard_(std::move(conn_guard))
 {
     try {
         auto& s = std::get<beast::ssl_stream<beast::tcp_stream>>(stream_);
@@ -100,7 +102,8 @@ HttpSession::HttpSession(
     MessageRelay& relay,
     RateLimiter& rate_limiter,
     KeyStorage& key_storage,
-    RedisManager& redis
+    RedisManager& redis,
+    std::shared_ptr<void> conn_guard
 )
     : stream_(std::move(stream))
     , is_tls_(false)
@@ -112,6 +115,7 @@ HttpSession::HttpSession(
     , redis_(redis)
     , health_handler_(config, conn_manager)
     , identity_handler_(config, key_storage, redis, rate_limiter)
+    , conn_guard_(std::move(conn_guard))
 {
     try {
         auto& s = std::get<beast::tcp_stream>(stream_);
@@ -655,6 +659,8 @@ void HttpSession::upgrade_to_websocket() {
         );
     }
     
+    ws_session->set_conn_guard(std::move(conn_guard_));
+    
     
     MessageRelay* relay_ptr = &relay_;
     ConnectionManager* conn_mgr_ptr = &conn_manager_;
@@ -783,8 +789,6 @@ void HttpSession::upgrade_to_websocket() {
                              error["type"] = "error";
                              error["code"] = "auth_failed";
                              error["message"] = "Authentication failed. Token may be expired.";
-                             error["code"] = "auth_failed";
-                             error["message"] = "Authentication failed. Token may be expired.";
                              TrafficNormalizer::pad_json(error, 1536);
                              session->send_text(json::serialize(error));
                              
@@ -798,7 +802,6 @@ void HttpSession::upgrade_to_websocket() {
                             json::object error;
                             error["type"] = "error";
                             error["code"] = "connection_limit";
-                            error["message"] = "Too many connections from your IP address";
                             error["message"] = "Too many connections from your IP address";
                             TrafficNormalizer::pad_json(error, 1536);
                             session->send_text(json::serialize(error));

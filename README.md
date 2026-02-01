@@ -6,7 +6,6 @@
 Entropy is a high-performance, privacy-first messaging server designed for environments where metadata protection and anonymity are paramount. It uses a blinded-ID routing system to ensure the server never knows who is talking to whom.
 
 ![Status](https://img.shields.io/badge/status-active-green)
-![C++](https://img.shields.io/badge/std-c%2B%2B17-blue)
 ![License](https://img.shields.io/badge/license-AGPLv3-blue)
 
 ---

@@ -7,6 +7,7 @@
 #include <sstream>
 #include <openssl/sha.h>
 #include <openssl/rand.h>
+#include <mutex>
 
 namespace entropy {
 
@@ -51,12 +52,13 @@ public:
            << "[" << level_to_string(level) << "] "
            << "[" << event_to_string(event) << "] ";
         
-        // Salt Rotation Logic:
         // A random salt is generated and rotated every 6 hours.
-        // This ensures Forward Secrecy for logs: even if a future salt is compromised,
-        // past IP-to-Hash mappings cannot be reversed.
+        // This ensures Forward Secrecy for logs
         static std::string log_salt;
         static std::chrono::steady_clock::time_point last_rotation;
+        static std::mutex log_mutex;
+        
+        std::lock_guard<std::mutex> lock(log_mutex);
         
         auto now_steady = std::chrono::steady_clock::now();
         if (log_salt.empty() || std::chrono::duration_cast<std::chrono::hours>(now_steady - last_rotation).count() >= 6) {
