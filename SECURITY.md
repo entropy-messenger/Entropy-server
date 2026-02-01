@@ -4,7 +4,7 @@
 
 **Please do not report security vulnerabilities through public GitHub issues.**
 
-If you discover a potential security flaw in Entropy, please report it responsibly by emailing me at `realmoyzy@gmail.com`.
+If you discover a potential security flaw in Entropy, please report it responsibly by emailing at `realmoyzy@gmail.com`.
 
 ### What to include:
 *   A descriptive title for the vulnerability.
@@ -23,7 +23,7 @@ If you discover a potential security flaw in Entropy, please report it responsib
 
 ## Technical Security Note
 
-Entropy is designed for high-concurrency, metadata-protected environments. If you find a way to:
+Entropy is designed for pure anonymity. If you find a way to:
 1. De-blind user identifiers without the server salt.
 2. Defeat the token-bucket rate limiting via packet manipulation.
 3. Cause a crash in the `Boost.Asio` hot-path.
