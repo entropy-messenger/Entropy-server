@@ -28,6 +28,11 @@ add_executable(unit_tests
     test_hardening.cpp
 )
 
+target_include_directories(unit_tests PRIVATE 
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include/handlers
+)
+
 target_link_libraries(unit_tests PRIVATE
     server_core
     GTest::gtest

@@ -76,19 +76,6 @@ FetchContent_MakeAvailable(redis-plus-plus)
 
 
 
-set(SOURCES
-    src/main.cpp
-    src/http_session.cpp
-    src/websocket_session.cpp
-    src/connection_manager.cpp
-    src/message_relay.cpp
-    src/redis_manager.cpp
-    src/rate_limiter.cpp
-    src/handlers/identity_handler.cpp
-    src/handlers/health_handler.cpp
-    src/traffic_normalizer.cpp
-)
-
 set(HEADERS
     include/server_config.hpp
     include/http_session.hpp
@@ -105,18 +92,27 @@ set(HEADERS
     include/security_logger.hpp
 )
 
-add_executable(server ${SOURCES} ${HEADERS})
+# Server Logic Library
+set(LOGIC_SOURCES
+    src/http_session.cpp
+    src/websocket_session.cpp
+    src/connection_manager.cpp
+    src/message_relay.cpp
+    src/redis_manager.cpp
+    src/rate_limiter.cpp
+    src/handlers/identity_handler.cpp
+    src/handlers/health_handler.cpp
+    src/traffic_normalizer.cpp
+)
 
+add_library(server_core STATIC ${LOGIC_SOURCES} ${HEADERS})
 
-
-target_include_directories(server PRIVATE 
+target_include_directories(server_core PUBLIC 
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/include/handlers
 )
 
-
-
-target_link_libraries(server PRIVATE
+target_link_libraries(server_core PUBLIC
     Boost::system
     Boost::thread
     Boost::json
@@ -126,6 +122,9 @@ target_link_libraries(server PRIVATE
     hiredis
     redis++
 )
+
+add_executable(server src/main.cpp)
+target_link_libraries(server PRIVATE server_core)
 
 
 
