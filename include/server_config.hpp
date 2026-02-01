@@ -51,7 +51,7 @@ struct ServerConfig {
     std::string admin_token = "";
     
     // CORS
-    std::vector<std::string> allowed_origins = {};
+    std::vector<std::string> allowed_origins = {"localhost", "127.0.0.1", "tauri://"};
     std::vector<std::string> allowed_methods = {"GET", "POST", "OPTIONS"};
     std::vector<std::string> allowed_headers = {"Content-Type", "Authorization"};
     

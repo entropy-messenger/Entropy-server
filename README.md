@@ -1,145 +1,110 @@
-
 # 🌌 Entropy Server
 
-> **Zero-Trace, End-to-End Encrypted Messaging Infrastructure**
+[![Status](https://img.shields.io/badge/status-active-green?style=for-the-badge&logo=statuspage)](https://github.com/Moyzy/entropy)
+[![License](https://img.shields.io/badge/license-AGPLv3-blue?style=for-the-badge&logo=gnu)](./LICENSE)
+[![Protocol](https://img.shields.io/badge/Architecture-Distributed-orange?style=for-the-badge)](./SPECS.md)
 
-Entropy is a high-performance, privacy-first messaging server designed for environments where metadata protection and anonymity are paramount. It uses a blinded-ID routing system to ensure the server never knows who is talking to whom.
-
-![Status](https://img.shields.io/badge/status-active-green)
-![License](https://img.shields.io/badge/license-AGPLv3-blue)
-
----
-
-## 🔐 Core Philosophy
-
-*   **Zero Knowledge Routing**: Routing is done via blinded hashes. The server cannot correlate a sender to a receiver's real identity.
-*   **Ephemeral by Design**: Messages are stored in volatile memory (Redis) only until delivery. No persistent logs.
-*   **Forensic Resistance**: "Burn" account feature instantly purges all trace of an ID from volatile memory.
-*   **DoS Resistant**: Integrated Proof-of-Work (PoW) and token-bucket rate limiting at the application layer.
-
-## 🚀 Features
-
-*   **Protocol**: WebSockets (WSS) over TLS 1.2/1.3.
-*   **Encryption**: Clients manage 100% of the keys (Ed25519/X25519). The server is a dumb relay.
-*   **Anonymity**: No phone numbers, no emails, no usernames. Only public key hashes.
-*   **Scalability**: Built on `boost::beast` and Redis for horizontal scaling.
+**Entropy Server** is a high-performance, stateless relay designed for sovereign messaging. It functions as a "Zero-Knowledge" backbone, ensuring that metadata is never stored and routing remains blinded to the network operator.
 
 ---
 
-## 🛠️ Quick Start
+## ✨ What the Server Does
 
-### Prerequisites
-*   **Operating System**: Linux / macOS
-*   **Compiler**: C++23 compliant (GCC 13+ or Clang 16+ highly recommended)
-*   **Build System**: CMake 3.14+
-*   **Libraries**:
-    *   **Boost 1.75+**: Required components: `system`, `thread`, `json`
-    *   **OpenSSL 1.1.1+ / 3.0+**: For TLS 1.3 and cryptographic primitives
-*   **Database**: Redis 6+ (optimized for volatile storage)
+The Entropy Server routes encrypted messages between clients without knowing their identities or reading message contents.  
 
-### Build
+### Core Functionality
+- **WebSocket Message Routing**: Routes encrypted messages to recipients using only cryptographic hash identifiers
+- **Offline Message Queue**: Stores messages in Redis for offline users with automatic deletion after delivery
+- **Public Key Storage**: Manages X3DH key bundles (identity keys, signed pre-keys, one-time pre-keys)
+- **Nickname Registry**: Maps human-readable names to identity hashes with PoW-based anti-squatting
+- **Session Tokens**: Issues reusable auth tokens to reduce repeated PoW challenges
+- **Account Deletion**: Atomically purges all user data (keys, messages, nicknames) on authenticated burn requests
+
+### Anti-Spam Protection
+- **Dynamic PoW**: SHA-256 challenges scale with server load and account age
+- **Rate Limiting**: Token-bucket (global) + sliding window (per-endpoint) limits
+- **Flood Protection**: Per-recipient message rate limits prevent targeted spam
+- **IP Blinding**: Logs use `HMAC(IP, Salt)` to enable abuse mitigation without tracking users
+
+### Privacy Features
+- **Traffic Padding**: All responses normalized to 1536 bytes to hide message sizes
+- **Timing Jitter**: Random 10-50ms delays prevent correlation attacks
+- **Dummy Packets**: Automatic background traffic maintains constant session profile
+
+---
+
+## 🛠️ Technical Stack
+
+- **Language**: C++23 with Boost.Asio (event-driven I/O)
+- **Protocols**: HTTP/REST + WebSockets over TLS 1.2+
+- **Storage**: Redis 6+ (Pub/Sub for distributed routing + volatile message queues)
+- **Crypto**: OpenSSL 3.0+ (Ed25519 verification, SHA-256)
+- **Security**: Forward-secret TLS ciphers, HSTS/CSP headers, recursive JSON depth limits
+
+### How It Works
+1. Clients connect via WebSocket and authenticate with PoW or session tokens
+2. Messages arrive as JSON envelopes with a recipient hash
+3. Server routes to local connections or publishes to Redis for cross-instance delivery
+4. Offline messages stored in Redis lists with TTL, deleted immediately after retrieval
+5. All traffic padded and jittered to resist metadata analysis
+
+---
+
+## 🚀 Quick Start
+
+### 1. Prerequisites
+- **GCC 13+** or **Clang 16+**
+- **Boost** 1.75+
+- **OpenSSL** 3.0+
+- **Redis** 6+
+
+### 2. Build
 ```bash
-git clone https://github.com/your-username/entropy.git
+git clone https://github.com/Moyzy/entropy.git
 cd entropy/server
 mkdir build && cd build
-cmake ..
+cmake -DCMAKE_BUILD_TYPE=Release ..
 make -j$(nproc)
 ```
 
-### Configuration
-Copy the example environment file:
+### 3. Deploy (Docker)
 ```bash
-cp .env.example .env
-```
-Edit `.env` to set your secure salt and ports:
-```ini
-ENTROPY_PORT=8080
-ENTROPY_SECRET_SALT=REPLACE_WITH_LONG_RANDOM_STRING_URGENTLY
-ENTROPY_REDIS_URL=tcp://127.0.0.1:6379
-```
-
-### Run
-```bash
-# Load env vars and start (TLS disabled for local dev)
-set -a; source .env; set +a
-./server --no-tls
+export ENTROPY_SECRET_SALT=$(openssl rand -hex 32)
+docker-compose up -d
 ```
 
 ---
 
 ## ⚙️ Configuration
 
-Entropy is configured primarily via environment variables.
+Set these environment variables before launching:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `ENTROPY_PORT` | Port to listen on | `8080` |
-| `ENTROPY_ADDR` | Address to bind to | `0.0.0.0` |
-| `ENTROPY_SECRET_SALT` | **CRITICAL**: Salt for blinded routing. | (Must be set) |
-| `ENTROPY_REDIS_URL` | Redis connection URL | `tcp://127.0.0.1:6379` |
-| `ENTROPY_ALLOWED_ORIGINS`| Comma-separated CORS origins | (Empty) |
-| `ENTROPY_RATE_LIMIT` | Global requests per second | `100.0` |
-| `ENTROPY_MAX_CONNS_PER_IP`| Connection cap per IP | `10` |
-| `ENTROPY_ADMIN_TOKEN` | Optional token for admin metrics | (Empty) |
+| `ENTROPY_SECRET_SALT`| **CRITICAL**: The salt used for routing obfuscation. | (Required) |
+| `ENTROPY_REDIS_URL` | Redis connection endpoint | `tcp://127.0.0.1:6379` |
+| `ENTROPY_ALLOWED_ORIGINS`| CORS origin policy | `*` |
 
 ---
 
-## 🛡️ Security Architecture
+## 🧪 Verification
 
-### 1. Blinded Routing (Zero-Metadata)
-Entropy prevents the server from correlating participants. 
-*   **The Problem**: In standard E2EE, the server knows Alice is talking to Bob.
-*   **The Solution**: Alice sends messages to `SHA256(BobID + ServerSalt)`. Without the `ServerSalt`, an attacker cannot determine Bob's identity even with access to the database or traffic logs.
-
-### 2. Proof-of-Work (PoW) Defense
-Expensive operations (Registration, Key Uploads) require a SHA-256 challenge solution. Difficulty scales dynamically based on:
-*   **Server Load**: Higher active connections increase difficulty globally.
-*   **Resource Scarcity**: Shorter, desirable nicknames (e.g., "alice") require exponentially more work.
-*   **Account Maturity**: Older, verified identities are rewarded with lower difficulty.
-
-### 3. K-Anonymity Discovery
-To hide interest in a peer, clients can fetch keys in batches. The server supports a sampler that returns random "decoy" keys, allowing clients to hide their target ID among $K$ others.
-
-### 4. Forensic Burn
-A signed `BURN` request triggers an atomic purge of all identity-associated data in Redis. This ensures that even if the server is seized, no metadata traces remain for that identifier.
-
----
-
-## 🛠️ Operations
-
-### 🐳 Docker Deployment
-Use our production-ready `docker-compose.yml`:
-```bash
-# Set your salt first!
-export ENTROPY_SECRET_SALT=$(openssl rand -hex 32)
-docker-compose up -d
-```
-
-### 🛑 Graceful Shutdown
-The server handles `SIGINT` and `SIGTERM`. Upon receiving a signal, it:
-1. Stops accepting new connections.
-2. Flushes pending write queues for active sessions.
-3. Closes all WebSockets cleanly.
-4. Shuts down the Boost.Asio I/O context.
-
----
-
-## 🧪 Testing
-
-We include a comprehensive suite of Python-based attack vectors and C++ unit tests.
+Audit the server integrity using our security and performance tests:
 
 ```bash
-# Run unit tests
-cd build && ctest
+# Run Unit Tests
+./run_tests.sh
 
-# Run full security audit (requires server running)
+# Run Security Audit
 python3 tests/security_audit.py
 ```
 
+---
+
 ## 📄 License
 
-This project is licensed under the GNU Affero General Public License v3.0 (AGPLv3) - see the LICENSE file for details.
+This project is licensed under the **AGPLv3**.
 
 ---
 
-**⚠️ DISCLAIMER:** This software is provided for educational and research purposes. Use responsibly.

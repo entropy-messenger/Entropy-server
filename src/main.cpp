@@ -20,7 +20,6 @@
 #include "key_storage.hpp"
 #include "http_session.hpp"
 #include "rate_limiter.hpp"
-#include "rate_limiter.hpp"
 #include "security_logger.hpp"
 #include "metrics.hpp"
 
@@ -111,7 +110,7 @@ private:
     
     void on_accept(beast::error_code ec, tcp::socket socket) {
         if (ec) {
-            std::cerr << "[!] Accept error: " << ec.message() << "\n";
+            SecurityLogger::log(SecurityLogger::Level::ERROR, SecurityLogger::EventType::CONNECTION_REJECTED, "internal", "Accept error: " + ec.message());
         } else {
             std::string remote_ip;
             try {
@@ -120,7 +119,7 @@ private:
                 remote_ip = "unknown";
             }
 
-            std::cout << "[*] New connection from " << remote_ip << "\n";
+            // Accepted connection from remote peer
             
             if (conn_manager_.connection_count() >= config_.max_global_connections) {
                 SecurityLogger::log(SecurityLogger::Level::WARNING, SecurityLogger::EventType::CONNECTION_REJECTED,
@@ -203,6 +202,7 @@ void load_server_certificate(ssl::context& ctx, const std::string& cert_path, co
 }
 
 int main(int argc, char* argv[]) {
+    using entropy::SecurityLogger;
     try {
         entropy::ServerConfig config;
         
@@ -221,7 +221,6 @@ int main(int argc, char* argv[]) {
                 try {
                     config.port = static_cast<uint16_t>(std::stoi(arg));
                 } catch (...) {
-                    std::cerr << "[!] Invalid argument: " << arg << "\n";
                     return 1;
                 }
             }
@@ -283,8 +282,7 @@ int main(int argc, char* argv[]) {
         if (const char* e = std::getenv("ENTROPY_LIMIT_ACCOUNT_BURN")) config.account_burn_limit = std::stoi(e);
         
         if (config.allowed_origins.empty()) {
-            std::cerr << "[!] WARNING: No CORS origins configured. Set ENTROPY_ALLOWED_ORIGINS environment variable." << std::endl;
-            std::cerr << "[!] Example: ENTROPY_ALLOWED_ORIGINS=https://example.com,https://app.example.com" << std::endl;
+             SecurityLogger::log(SecurityLogger::Level::WARNING, SecurityLogger::EventType::INVALID_INPUT, "internal", "No CORS origins configured");
         }
         
         static const std::string DEFAULT_SALT = "CHANGE_ME_IN_PRODUCTION_VIA_ENV_OR_LOGS_WILL_BE_INSECURE";
@@ -301,7 +299,7 @@ int main(int argc, char* argv[]) {
         }
         
         
-        std::cout << "[*] Detecting executable path..." << std::endl;
+        // Initialize environment
         std::filesystem::path exe_path;
         try {
             exe_path = std::filesystem::canonical("/proc/self/exe").parent_path();
@@ -339,7 +337,6 @@ ENTROPY SECURE MESSAGING SERVER v2.0
         net::io_context ioc{config.thread_count};
         
         
-        std::cout << "[*] Initializing SSL context..." << std::endl;
         ssl::context ssl_ctx{ssl::context::tlsv12};
         if (config.enable_tls) {
             load_server_certificate(ssl_ctx, config.cert_path, config.key_path);
@@ -347,7 +344,6 @@ ENTROPY SECURE MESSAGING SERVER v2.0
         
         entropy::ConnectionManager conn_manager(config.secret_salt);
         
-        std::cout << "[*] Initializing Redis..." << std::endl;
         entropy::RedisManager redis(config, conn_manager, config.secret_salt); 
         
         entropy::RateLimiter rate_limiter(redis);
@@ -382,31 +378,15 @@ ENTROPY SECURE MESSAGING SERVER v2.0
         );
         listener->run();
         
-        std::cout << "[*] Server listening on " << config.address << ":" << config.port << "\n";
-        std::cout << "[*] Using " << config.thread_count << " threads\n";
-        if (config.enable_tls) {
-            std::cout << "[*] WebSocket endpoint: wss://localhost:" << config.port << "/ws\n";
-            std::cout << "[*] Health check: https://localhost:" << config.port << "/health\n\n";
-        } else {
-            std::cout << "[*] WebSocket endpoint: ws://localhost:" << config.port << "/ws\n";
-            std::cout << "[*] Health check: http://localhost:" << config.port << "/health\n";
-            std::cout << "[!] WARNING: TLS disabled - do NOT use in production!\n\n";
-        }
-        
-        // Capture SIGINT and SIGTERM to perform a clean shutdown
+        // Server started successfully
+        // Captured SIGINT and SIGTERM to perform a clean shutdown
         net::signal_set signals(ioc, SIGINT, SIGTERM);
         signals.async_wait(
             [&ioc, &running, &conn_manager, listener](beast::error_code const&, int sig) {
-                std::cout << "\n[*] Received signal " << sig << ", initiating graceful shutdown...\n";
+                SecurityLogger::log(SecurityLogger::Level::INFO, SecurityLogger::EventType::SUSPICIOUS_ACTIVITY, "internal", "Initiating graceful shutdown");
                 running = false;
-                
-                std::cout << "[*] Stopping acceptor...\n";
                 listener->stop();
-
-                std::cout << "[*] Closing all active connections...\n";
                 conn_manager.close_all_connections();
-                
-                std::cout << "[*] Draining I/O context...\n";
                 ioc.stop(); 
             });
         
@@ -427,7 +407,6 @@ ENTROPY SECURE MESSAGING SERVER v2.0
         
         running = false;
         
-        std::cout << "[*] Server stopped\n";
         return 0;
         
     } catch (const std::exception& e) {

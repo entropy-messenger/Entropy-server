@@ -313,8 +313,17 @@ http::response<http::string_body> HttpSession::handle_relay() {
             to_hash = std::string(obj["to"].as_string());
         }
 
+        int intensity_penalty = 0;
+        int intensity = redis_.get_registration_intensity();
+        if (intensity > 10) intensity_penalty = 2;
+        if (intensity > 50) intensity_penalty = 4;
+        if (intensity > 200) intensity_penalty = 8;
+        
+        long long age = redis_.get_account_age(to_hash);
+        int required_difficulty = ::entropy::PoWVerifier::get_required_difficulty(intensity_penalty, age);
+
         // Verify PoW is bound to the target 'to' recipient hash.
-        if (!validate_pow(req_, rate_limiter_, remote_addr_, -1, to_hash)) {
+        if (!validate_pow(req_, rate_limiter_, remote_addr_, required_difficulty, to_hash)) {
             SecurityLogger::log(SecurityLogger::Level::ERROR, SecurityLogger::EventType::AUTH_FAILURE,
                                remote_addr_, "HTTP relay rejected: invalid PoW or context binding");
             json::object error;
@@ -485,6 +494,7 @@ http::response<http::string_body> HttpSession::handle_cors_preflight() {
 }
 
 http::response<http::string_body> HttpSession::handle_not_found() {
+    SecurityLogger::log(SecurityLogger::Level::WARNING, SecurityLogger::EventType::INVALID_INPUT, remote_addr_, "404 Not Found: " + std::string(req_.target()));
     json::object response;
     response["error"] = "Not Found";
     
@@ -569,19 +579,20 @@ void HttpSession::add_cors_headers(http::response<Body>& res) {
         
         if (origin_allowed) {
             res.set(http::field::access_control_allow_credentials, "true");
-        } else if (!origin.empty()) {
-            SecurityLogger::log(SecurityLogger::Level::WARNING, SecurityLogger::EventType::SUSPICIOUS_ACTIVITY,
-                               remote_addr_, "Disallowed origin: " + origin);
-        }
+        } 
     } 
     
-    
+    // Automatic allowance for local development and Tauri apps
     if (!res.count(http::field::access_control_allow_origin) && !origin.empty()) {
         if (origin.find("localhost") != std::string::npos || 
             origin.find("tauri://") != std::string::npos || 
             origin.find("127.0.0.1") != std::string::npos) {
             res.set(http::field::access_control_allow_origin, origin);
             res.set(http::field::access_control_allow_credentials, "true");
+        } else if (!config_.allowed_origins.empty()) {
+            // Only log if we have a whitelist and the origin isn't local either
+            SecurityLogger::log(SecurityLogger::Level::WARNING, SecurityLogger::EventType::SUSPICIOUS_ACTIVITY,
+                               remote_addr_, "Disallowed origin: " + origin);
         }
     }
     
@@ -640,7 +651,6 @@ void HttpSession::on_write(bool close, beast::error_code ec, std::size_t  ) {
 void HttpSession::upgrade_to_websocket() {
     std::shared_ptr<WebSocketSession> ws_session;
     
-    // Create appropriate session based on transport security (TLS vs Plaintext)
     if (is_tls_) {
         ws_session = std::make_shared<WebSocketSession>(
             std::move(std::get<beast::ssl_stream<beast::tcp_stream>>(stream_)),
@@ -771,8 +781,17 @@ void HttpSession::upgrade_to_websocket() {
                             }
                             
                             
+                            int intensity_penalty = 0;
+                            int intensity = redis_ptr->get_registration_intensity();
+                            if (intensity > 10) intensity_penalty = 2;
+                            if (intensity > 50) intensity_penalty = 4;
+                            if (intensity > 200) intensity_penalty = 8;
+                            
+                            long long age = redis_ptr->get_account_age(hash);
+                            int required_difficulty = ::entropy::PoWVerifier::get_required_difficulty(intensity_penalty, age);
+
                             if (!seed.empty() && !nonce.empty() && rate_limiter_ptr->consume_challenge(seed) && 
-                                ::entropy::PoWVerifier::verify(seed, nonce, hash)) {
+                                ::entropy::PoWVerifier::verify(seed, nonce, hash, required_difficulty)) {
                                 auth_valid = true;
                             }
                         }

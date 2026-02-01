@@ -155,8 +155,17 @@ http::response<http::string_body> IdentityHandler::handle_keys_upload(const http
              return res;
         }
 
+        int intensity_penalty = 0;
+        int intensity = redis_.get_registration_intensity();
+        if (intensity > 10) intensity_penalty = 2;
+        if (intensity > 50) intensity_penalty = 4;
+        if (intensity > 200) intensity_penalty = 8;
+        
+        long long age = redis_.get_account_age(user_hash);
+        int required_difficulty = PoWVerifier::get_required_difficulty(intensity_penalty, age);
+
         // Verify PoW is bound to the identity_hash.
-        if (!validate_pow(req, rate_limiter_, remote_addr, -1, user_hash)) {
+        if (!validate_pow(req, rate_limiter_, remote_addr, required_difficulty, user_hash)) {
              SecurityLogger::log(SecurityLogger::Level::ERROR, SecurityLogger::EventType::AUTH_FAILURE,
                                 remote_addr, "Keys upload rejected: invalid PoW or context binding");
              json::object error;
