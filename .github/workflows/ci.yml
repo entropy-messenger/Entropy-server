@@ -37,7 +37,10 @@ jobs:
           g++-13 \
           python3-websockets \
           python3-requests \
-          redis-tools
+          python3-redis \
+          redis-tools \
+          redis-server \
+          curl
 
     - name: Configure CMake
       run: |

@@ -18,8 +18,6 @@ else
 fi
 
 echo "[*] SIMULATING REDIS FAILURE (Simulated)..."
-# We can use redis-cli to kill the server or just block port 6379 if we had root
-# Here we will just perform a 'DEBUG SEGFAULT' via redis-cli if allowed, or manual restart
 redis-cli shutdown save
 sleep 2
 
@@ -37,8 +35,6 @@ redis-server --daemonize yes
 sleep 2
 
 echo "[*] Verifying Auto-Recovery..."
-# The server should re-link its subscriber loop
-# This might take a few seconds based on the 2s sleep in subscriber_loop
 sleep 5
 curl -s http://localhost:$PORT/health > /dev/null
 

@@ -635,12 +635,8 @@ void HttpSession::on_write(bool close, beast::error_code ec, std::size_t  ) {
     do_read();
 }
 
-// Authoritatively purges all data associated with an identity hash.
-// Account burn logic moved to IdentityHandler
-
 
 // Transitions the HTTP session to a long-lived WebSocket session.
-// This involves moving ownership of the underlying TCP/SSL stream.
 void HttpSession::upgrade_to_websocket() {
     std::shared_ptr<WebSocketSession> ws_session;
     
