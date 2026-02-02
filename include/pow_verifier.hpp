@@ -49,9 +49,8 @@ public:
      */
     static int get_difficulty_for_nickname(const std::string& nickname, int intensity_penalty = 0, long long account_age = 0) {
         int base = get_required_difficulty(intensity_penalty, account_age);
-        if (nickname.length() <= 5) return base + 3; 
-        if (nickname.length() <= 7) return base + 2; 
-        if (nickname.length() <= 9) return base + 1;
+        if (nickname.length() <= 5) return base + 2; 
+        if (nickname.length() <= 7) return base + 1; 
         return base;
     }
 
@@ -59,7 +58,7 @@ public:
      * Verifies a PoW solution.
      * @param seed The challenge seed issued by the server.
      * @param nonce The client-generated solution to the challenge.
-     * @param context Optional operation-specific context (e.g. nickname).
+     * @param context Operation-specific context (e.g. nickname).
      * @param target_difficulty Required number of leading hex zeros.
      */
     static bool verify(const std::string& seed, const std::string& nonce, const std::string& context = "", int target_difficulty = -1) {

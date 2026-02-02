@@ -276,6 +276,8 @@ void WebSocketSession::on_write(beast::error_code ec, std::size_t  ) {
 }
 
 void WebSocketSession::close() {
+    if (close_triggered_.exchange(true)) return;
+
     if (pacing_timer_) {
         beast::error_code ec;
         pacing_timer_->cancel(ec);

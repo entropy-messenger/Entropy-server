@@ -34,8 +34,8 @@ TEST_F(PoWVerifierTest, DifficultyCalculations) {
 TEST_F(PoWVerifierTest, NicknameDifficulty) {
     
     EXPECT_EQ(PoWVerifier::get_difficulty_for_nickname("verylongnickname"), 4);
-    EXPECT_EQ(PoWVerifier::get_difficulty_for_nickname("shorty"), 6); 
-    EXPECT_EQ(PoWVerifier::get_difficulty_for_nickname("abc"), 7); 
+    EXPECT_EQ(PoWVerifier::get_difficulty_for_nickname("shorty"), 5); 
+    EXPECT_EQ(PoWVerifier::get_difficulty_for_nickname("abc"), 6); 
 }
 
 TEST_F(PoWVerifierTest, Verification) {
