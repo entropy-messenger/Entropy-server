@@ -23,25 +23,25 @@ struct ServerConfig {
     std::string key_path = "certs/server.key";
     
     // Resource Limits
-    size_t max_message_size = 1024 * 1024;
+    size_t max_message_size = 5 * 1024 * 1024;
     size_t max_connections_per_ip = 10;
     size_t max_global_connections = 100000;
     int connection_timeout_sec = 60;
     int websocket_ping_interval_sec = 15;
     
     // Rate Limiting
-    double rate_limit_per_sec = 100.0;
-    size_t rate_limit_burst = 200;
+    double rate_limit_per_sec = 200.0;
+    size_t rate_limit_burst = 400;
     
     // PoW
     int pow_rate_limit = 20; 
     
     // Redis-backed Window Limits
-    int global_rate_limit = 120;
-    int keys_upload_limit = 5;
-    int keys_fetch_limit = 20;
-    int keys_random_limit = 10;
-    int relay_limit = 30;
+    int global_rate_limit = 300;
+    int keys_upload_limit = 10;
+    int keys_fetch_limit = 50;
+    int keys_random_limit = 20;
+    int relay_limit = 150;
     int nick_register_limit = 5;
     int nick_lookup_limit = 30;
     int account_burn_limit = 3;
@@ -64,7 +64,7 @@ struct ServerConfig {
     // Traffic Pacing
     struct Pacing {
         static constexpr int idle_threshold_ms = 5000;
-        static constexpr size_t packet_size = 1024;
+        static constexpr size_t packet_size = 1536;
         static constexpr int tick_interval_ms = 500;
     } pacing;
 };

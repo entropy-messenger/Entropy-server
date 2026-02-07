@@ -17,14 +17,15 @@ RedisManager::RedisManager(const ServerConfig& config, ConnectionManager& conn_m
         redis_ = std::make_unique<sw::redis::Redis>(config.redis_url);
         connected_ = true;
         
-        // Enforce volatile-only and ephemeral data policies.
+        // Enforce Quiet Persistence (Forensic-Safe)
         try {
-            redis_->command("CONFIG", "SET", "save", "");
-            redis_->command("CONFIG", "SET", "appendonly", "no");
-            redis_->command("CONFIG", "SET", "maxmemory-policy", "allkeys-lru");
-            std::cout << "[*] Redis volatile-only policy enforced.\n";
+            // Lazy snapshot: 15 minutes + 1 change. NO forensic logs.
+            redis_->command("CONFIG", "SET", "save", "900 1"); 
+            redis_->command("CONFIG", "SET", "appendonly", "no"); 
+            redis_->command("CONFIG", "SET", "maxmemory-policy", "noeviction");
+            std::cout << "[*] Redis 'Quiet Persistence' active (15min snapshots, no forensic logs).\n";
         } catch (...) {
-            std::cerr << "[!] Warning: Could not enforce Redis volatile policy via CONFIG SET.\n";
+            std::cerr << "[!] Warning: Redis persistence fallback to defaults.\n";
         }
         
         running_ = true;

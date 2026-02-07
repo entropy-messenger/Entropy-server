@@ -10,7 +10,11 @@
 #include <iomanip>
 #include <sstream>
 
+#include "traffic_normalizer.hpp"
+#include <boost/json.hpp>
+
 namespace http = boost::beast::http;
+namespace json = boost::json;
 
 namespace entropy {
 
@@ -38,10 +42,13 @@ WebSocketSession::WebSocketSession(
     
     // Configure session timeouts and keep-alive behavior
     websocket::stream_base::timeout opt{};
-    opt.handshake_timeout = std::chrono::seconds(10);
-    opt.idle_timeout = std::chrono::seconds(60);  
+    opt.handshake_timeout = std::chrono::seconds(15);
+    opt.idle_timeout = std::chrono::seconds(300); // 5 minute idle window 
     opt.keep_alive_pings = true;                   
     tls_ws.set_option(opt);
+    
+    // Disable underlying socket-level timeout to let WebSocket layer handle it
+    beast::get_lowest_layer(tls_ws).expires_never();
     
     // Enable per-message compression for bandwidth efficiency
     websocket::permessage_deflate pmd;
@@ -74,10 +81,13 @@ WebSocketSession::WebSocketSession(
     auto& plain_ws = std::get<websocket::stream<beast::tcp_stream>>(ws_);
     
     websocket::stream_base::timeout opt{};
-    opt.handshake_timeout = std::chrono::seconds(10);
-    opt.idle_timeout = std::chrono::seconds(60);  
+    opt.handshake_timeout = std::chrono::seconds(15);
+    opt.idle_timeout = std::chrono::seconds(300);  
     opt.keep_alive_pings = true;                   
     plain_ws.set_option(opt);
+    
+    // Disable underlying socket-level timeout to let WebSocket layer handle it
+    beast::get_lowest_layer(plain_ws).expires_never();
     
     websocket::permessage_deflate pmd;
     pmd.server_enable = true;
@@ -200,68 +210,65 @@ void WebSocketSession::on_read(beast::error_code ec, std::size_t bytes_transferr
 }
 
 // Enqueue text message for asynchronous delivery
-void WebSocketSession::send_text(const std::string& message) {
+void WebSocketSession::send_text(const std::string& message, bool is_media) {
     auto msg_data = std::make_shared<std::string>(message);
     
     net::post(
         get_executor(),
-        [self = shared_from_this(), msg_data, this]() {
-            write_queue_.push({msg_data, false});
-            
-            if (!is_writing_) {
-                do_write();
-            }
+        [self = shared_from_this(), msg_data, is_media, this]() {
+            write_queue_.push({msg_data, false, is_media});
         });
 }
 
 // Enqueue binary message for asynchronous delivery
-void WebSocketSession::send_binary(const std::string& data) {
+void WebSocketSession::send_binary(const std::string& data, bool is_media) {
     auto msg_data = std::make_shared<std::string>(data);
     
     net::post(
         get_executor(),
-        [self = shared_from_this(), msg_data, this]() {
-            write_queue_.push({msg_data, true});
-            
-            if (!is_writing_) {
-                do_write();
-            }
+        [self = shared_from_this(), msg_data, is_media, this]() {
+            write_queue_.push({msg_data, true, is_media});
         });
 }
 
 // Async write loop
 void WebSocketSession::do_write() {
-    if (write_queue_.empty()) {
-        is_writing_ = false;
+    if (write_queue_.empty() || is_writing_) {
         return;
     }
     
     is_writing_ = true;
     auto item = write_queue_.front();
+    write_queue_.pop();
     
     auto self = shared_from_this();
-    
+    const bool was_media = item.is_media;
+
     if (is_tls_) {
         auto& ws = std::get<websocket::stream<beast::ssl_stream<beast::tcp_stream>>>(ws_);
         ws.binary(item.is_binary);
         ws.async_write(
             net::buffer(*item.data),
-            [self, item](beast::error_code ec, std::size_t bytes) {
+            [self, item, was_media](beast::error_code ec, std::size_t bytes) {
                 self->on_write(ec, bytes);
+                self->last_was_media_ = was_media;
             });
     } else {
         auto& ws = std::get<websocket::stream<beast::tcp_stream>>(ws_);
         ws.binary(item.is_binary);
         ws.async_write(
             net::buffer(*item.data),
-            [self, item](beast::error_code ec, std::size_t bytes) {
+            [self, item, was_media](beast::error_code ec, std::size_t bytes) {
                 self->on_write(ec, bytes);
+                self->last_was_media_ = was_media;
             });
     }
     last_activity_time_ = std::chrono::steady_clock::now();
 }
 
 void WebSocketSession::on_write(beast::error_code ec, std::size_t  ) {
+    is_writing_ = false; 
+
     if (ec) {
         SecurityLogger::log(SecurityLogger::Level::ERROR, 
                            SecurityLogger::EventType::SUSPICIOUS_ACTIVITY,
@@ -270,16 +277,19 @@ void WebSocketSession::on_write(beast::error_code ec, std::size_t  ) {
         close();
         return;
     }
-    
-    write_queue_.pop();
+
+    // Try to send next message immediately if available
     do_write();
 }
 
 void WebSocketSession::close() {
+    if (close_triggered_.exchange(true)) return;
+    
     if (pacing_timer_) {
         beast::error_code ec;
         pacing_timer_->cancel(ec);
     }
+    
     do_close();
 }
 
@@ -297,6 +307,7 @@ void WebSocketSession::do_close() {
                                        remote_addr_, 
                                        "WS Close Error: " + ec.message());
                 }
+                trigger_close_handler();
             });
     } else {
         auto& ws = std::get<websocket::stream<beast::tcp_stream>>(ws_);
@@ -309,6 +320,7 @@ void WebSocketSession::do_close() {
                                        remote_addr_, 
                                        "WS Close Error: " + ec.message());
                 }
+                trigger_close_handler();
             });
     }
 }
@@ -324,28 +336,36 @@ void WebSocketSession::tick_pacing() {
     if (close_triggered_) return;
     
     auto self = shared_from_this();
-    pacing_timer_->expires_after(std::chrono::milliseconds(ServerConfig::Pacing::tick_interval_ms));
+    
+    // Stealth Gear (500ms) or Media Gear (10ms)
+    int current_interval = last_was_media_ ? 10 : ServerConfig::Pacing::tick_interval_ms;
+
+    pacing_timer_->expires_after(std::chrono::milliseconds(current_interval));
     pacing_timer_->async_wait([self, this](beast::error_code ec) {
         if (ec || close_triggered_) return;
         
         net::post(get_executor(), [self, this]() {
             if (close_triggered_) return;
-            
-            if (write_queue_.empty()) {
-                
-                auto now = std::chrono::steady_clock::now();
-                auto idle_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_activity_time_).count();
 
-                if (idle_ms < ServerConfig::Pacing::idle_threshold_ms) {
-                    // Send dummy text to maintain a constant traffic profile
-                    std::string dummy = "{\"type\":\"dummy_pacing\"}";
-                    
-                    if (dummy.size() < ServerConfig::Pacing::packet_size) {
-                        dummy.append(ServerConfig::Pacing::packet_size - dummy.size(), ' ');
-                    }
-                    send_text(dummy);
+            // If we have nothing to send, and we are authenticated, send a dummy to maintain pulse.
+            // If not authenticated, we only send real messages (like challenges, keys, errors).
+            if (write_queue_.empty()) {
+                if (!is_authenticated()) {
+                    // Stay silent until auth, but keep the heartbeat ready
+                    tick_pacing();
+                    return;
                 }
+                
+                json::object dummy;
+                dummy["type"] = "dummy_pacing";
+                TrafficNormalizer::pad_json(dummy, ServerConfig::Pacing::packet_size);
+                write_queue_.push(QueuedMessage{std::make_shared<std::string>(json::serialize(dummy)), false, false});
+                last_was_media_ = false;
             }
+            
+            // Trigger write if not already writing
+            do_write();
+
             tick_pacing();
         });
     });

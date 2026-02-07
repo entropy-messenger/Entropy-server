@@ -62,10 +62,10 @@ public:
     void run();
     
      
-    void send_text(const std::string& message);
+    void send_text(const std::string& message, bool is_media = false);
     
      
-    void send_binary(const std::string& data);
+    void send_binary(const std::string& data, bool is_media = true);
     
      
     void close();
@@ -133,6 +133,7 @@ private:
     struct QueuedMessage {
         std::shared_ptr<std::string> data;
         bool is_binary;
+        bool is_media;
     };
     std::queue<QueuedMessage> write_queue_;
     bool is_writing_ = false;
@@ -140,6 +141,7 @@ private:
     MessageHandler on_message_;
     CloseHandler on_close_;
     std::shared_ptr<void> conn_guard_;
+    bool last_was_media_ = false;
     
     void do_read();
     void on_read(beast::error_code ec, std::size_t bytes_transferred);

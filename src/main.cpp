@@ -382,12 +382,13 @@ ENTROPY SECURE MESSAGING SERVER v2.0
         // Captured SIGINT and SIGTERM to perform a clean shutdown
         net::signal_set signals(ioc, SIGINT, SIGTERM);
         signals.async_wait(
-            [&ioc, &running, &conn_manager, listener](beast::error_code const&, int sig) {
+            [&ioc, &running, &conn_manager, listener, &cleanup_timer](beast::error_code const&, int sig) {
                 SecurityLogger::log(SecurityLogger::Level::INFO, SecurityLogger::EventType::SUSPICIOUS_ACTIVITY, "internal", "Initiating graceful shutdown");
                 running = false;
+                beast::error_code ec;
+                cleanup_timer.cancel(ec);
                 listener->stop();
                 conn_manager.close_all_connections();
-                ioc.stop(); 
             });
         
         std::vector<std::thread> threads;

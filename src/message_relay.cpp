@@ -78,7 +78,7 @@ void MessageRelay::relay_message(const std::string& message_json,
     }
 
     // Handle heartbeats and dummy packets for traffic normalization
-    if (routing.type == "ping" || routing.type == "dummy") {
+    if (routing.type == "ping" || routing.type == "dummy" || routing.type == "dummy_pacing") {
         handle_dummy(sender);
         return;
     }
@@ -88,11 +88,23 @@ void MessageRelay::relay_message(const std::string& message_json,
         if (!json_val.is_object()) return;
         auto& obj = json_val.as_object();
         
-        // Strip non-essential fields to normalize the message body
+        // Strip non-essential fields to normalize the message body, but preserve protocol fields
         json::object clean_msg;
         if (obj.contains("type")) clean_msg["type"] = obj["type"];
-        clean_msg["body"] = obj["body"];
+        
+        // Protocol-specific field preservation
+        if (obj.contains("fragmentId")) clean_msg["fragmentId"] = obj["fragmentId"];
+        if (obj.contains("index")) clean_msg["index"] = obj["index"];
+        if (obj.contains("total")) clean_msg["total"] = obj["total"];
+        if (obj.contains("data")) clean_msg["data"] = obj["data"];
+        if (obj.contains("bundle")) clean_msg["bundle"] = obj["bundle"];
+        if (obj.contains("body")) clean_msg["body"] = obj["body"];
+        if (obj.contains("content")) clean_msg["content"] = obj["content"];
+        if (obj.contains("id")) clean_msg["id"] = obj["id"];
         if (obj.contains("pow")) clean_msg["pow"] = obj["pow"];
+        
+        // Ensure the sender identity is preserved for the receiver
+        clean_msg["sender"] = sender->get_user_data();
         
         std::string final_json = json::serialize(clean_msg);
         
@@ -118,13 +130,16 @@ void MessageRelay::relay_message(const std::string& message_json,
 
             auto recipient = conn_manager_.get_connection(routing.to);
             if (recipient) {
+                // Determine if this is a media fragment to trigger faster pacing
+                bool is_media = (clean_msg.contains("type") && clean_msg["type"] == "msg_fragment");
+                
                 // Local delivery (async with jitter)
                 auto timer = std::make_shared<boost::asio::steady_timer>(recipient->get_executor());
                 timer->expires_after(std::chrono::milliseconds(dis(gen)));
                 
-                timer->async_wait([recipient, final_json, timer](const boost::system::error_code& ec) {
+                timer->async_wait([recipient, final_json, is_media, timer](const boost::system::error_code& ec) {
                     if (!ec) {
-                        recipient->send_text(final_json);
+                        recipient->send_text(final_json, is_media);
                     }
                 });
             } else {
@@ -205,7 +220,7 @@ void MessageRelay::relay_binary(const std::string& recipient_hash,
             
             timer->async_wait([recipient, payload, sender, timer](const boost::system::error_code& ec) {
                 if (!ec) {
-                    recipient->send_binary(payload);
+                    recipient->send_binary(payload, true); // Binary is always media-paced
                     
                     json::object response;
                     response["type"] = "relay_success";
@@ -222,6 +237,8 @@ void MessageRelay::relay_binary(const std::string& recipient_hash,
         std::string binary_data(static_cast<const char*>(data), length);
         json::object wrapper;
         wrapper["type"] = "binary_payload";
+        wrapper["sender"] = sender->get_user_data(); 
+        
         std::stringstream ss;
         for (unsigned char c : binary_data) {
             ss << std::hex << std::setw(2) << std::setfill('0') << (int)c;
@@ -429,7 +446,10 @@ void MessageRelay::deliver_pending(const std::string& recipient_hash,
     auto raw_messages = redis_.retrieve_offline_messages(recipient_hash);
     if (raw_messages.empty()) return;
     
-    int64_t mock_id = 1; 
+    int64_t mock_id = 1;
+    int message_index = 0;
+    const int pacing_interval_ms = 10; // "Media gear" catch-up speed for offline messages
+    
     for (const auto& msg_json : raw_messages) {
         try {
             json::object wrapper;
@@ -443,11 +463,14 @@ void MessageRelay::deliver_pending(const std::string& recipient_hash,
             
             std::string final_payload = json::serialize(wrapper);
             
+            // Apply cumulative delay to space messages out
             auto timer = std::make_shared<boost::asio::steady_timer>(recipient->get_executor());
+            int delay_ms = (message_index++) * pacing_interval_ms;
             
+            // Add slight jitter to the drip to prevent rhythmic analysis
             thread_local std::mt19937 gen{std::random_device{}()};
-            std::uniform_int_distribution<> dis(10, 80); 
-            timer->expires_after(std::chrono::milliseconds(dis(gen)));
+            std::uniform_int_distribution<> dis(0, 50);
+            timer->expires_after(std::chrono::milliseconds(delay_ms + dis(gen)));
             
             timer->async_wait([recipient, final_payload, timer](const boost::system::error_code& ec) {
                 if (!ec) {
@@ -455,7 +478,7 @@ void MessageRelay::deliver_pending(const std::string& recipient_hash,
                 }
             });
         } catch (const std::exception& e) {
-            std::cerr << "[!] Failed to deliver pending message: " << e.what() << "\n";
+            std::cerr << "[!] Failed to prepare pending message: " << e.what() << "\n";
         }
     }
 }

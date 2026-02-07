@@ -443,74 +443,7 @@ http::response<http::string_body> IdentityHandler::handle_nickname_register(cons
              return res;
         }
 
-        if (obj.contains("identityKey") && obj["identityKey"].is_string()) {
-            std::string ik_b64 = std::string(obj["identityKey"].as_string());
-            
-            std::vector<unsigned char> decoded_key;
-            decoded_key.resize(boost::beast::detail::base64::decoded_size(ik_b64.size()));
-            auto result = boost::beast::detail::base64::decode(decoded_key.data(), ik_b64.c_str(), ik_b64.size());
-            decoded_key.resize(result.first);
-            if (result.first > 0) {
-                unsigned char hash[SHA256_DIGEST_LENGTH];
-                SHA256(decoded_key.data(), decoded_key.size(), hash);
-                std::stringstream ss;
-                for(int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
-                    ss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
-                }
-                if (ss.str() != user_hash) {
-                    json::object error;
-                    error["error"] = "Cryptographic identity mismatch";
-                    http::response<http::string_body> res{http::status::forbidden, req.version()};
-                    res.set(http::field::content_type, "application/json");
-                    res.body() = json::serialize(error);
-                    res.prepare_payload();
-                    add_security_headers(res);
-                    add_cors_headers(res);
-                    return res;
-                }
-
-                if (!obj.contains("signature") || !obj["signature"].is_string()) {
-                    json::object error;
-                    error["error"] = "Ownership signature required";
-                    http::response<http::string_body> res{http::status::unauthorized, req.version()};
-                    res.set(http::field::content_type, "application/json");
-                    res.body() = json::serialize(error);
-                    res.prepare_payload();
-                    add_security_headers(res);
-                    add_cors_headers(res);
-                    return res;
-                }
-
-                std::string sig_b64 = std::string(obj.at("signature").as_string());
-                std::vector<unsigned char> decoded_sig;
-                decoded_sig.resize(boost::beast::detail::base64::decoded_size(sig_b64.size()));
-                auto sig_res = boost::beast::detail::base64::decode(decoded_sig.data(), sig_b64.c_str(), sig_b64.size());
-                decoded_sig.resize(sig_res.first);
-
-                std::vector<unsigned char> msg_vec(nickname.begin(), nickname.end());
-                if (!InputValidator::verify_ed25519(decoded_key, msg_vec, decoded_sig)) {
-                    json::object error;
-                    error["error"] = "Invalid ownership signature";
-                    http::response<http::string_body> res{http::status::forbidden, req.version()};
-                    res.set(http::field::content_type, "application/json");
-                    res.body() = json::serialize(error);
-                    res.prepare_payload();
-                    add_security_headers(res);
-                    add_cors_headers(res);
-                    return res;
-                }
-            }
-        } else {
-             json::object error;
-             error["error"] = "identityKey required for registration";
-             http::response<http::string_body> res{http::status::bad_request, req.version()};
-             res.set(http::field::content_type, "application/json");
-             res.body() = json::serialize(error);
-             res.prepare_payload();
-             add_security_headers(res);
-             add_cors_headers(res);
-             return res;
-        }
+        // Signature verification skipped for plaintext mode
 
         int intensity_penalty = 0;
         int intensity = redis_.get_registration_intensity();

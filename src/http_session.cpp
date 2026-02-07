@@ -684,7 +684,7 @@ void HttpSession::upgrade_to_websocket() {
             bool is_binary
         ) {
             auto b_ip = conn_mgr_ptr->blind_id(session->remote_address());
-            int max_msgs = session->is_authenticated() ? 200 : 10;
+            int max_msgs = session->is_authenticated() ? 200 : 50;
             auto limit_res = rate_limiter_ptr->check("ws_msg:" + b_ip, max_msgs, 10);
             if (!limit_res.allowed) {
                 SecurityLogger::log(SecurityLogger::Level::WARNING, SecurityLogger::EventType::RATE_LIMIT_HIT,
@@ -746,7 +746,7 @@ void HttpSession::upgrade_to_websocket() {
                     return;
                 }
 
-                if (type == "dummy") {
+                if (type == "dummy" || type == "dummy_pacing") {
                     return; 
                 }
 
@@ -826,6 +826,7 @@ void HttpSession::upgrade_to_websocket() {
                         
                         session->set_user_data(hash);
                         session->set_challenge_solved(true);
+                        session->set_authenticated(true);
                         
                         relay_ptr->subscribe_user(hash);
                         
